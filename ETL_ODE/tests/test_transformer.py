@@ -24,9 +24,10 @@ from transformer import (
     split_ode_rows,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
-SOURCE_PATH = ROOT / 'ETL_ODE' / 'reporte de cancelados agosto 2026.xlsx'
-MODEL_PATH = ROOT / 'ETL_ODE' / 'FACTURA 07-2026 SHIKINA.xls'
+# Tests live in ETL_ODE/tests/; data files are in ETL_ODE/
+_ETL_DIR = Path(__file__).resolve().parent.parent
+SOURCE_PATH = _ETL_DIR / 'reporte de cancelados agosto 2026.xlsx'
+MODEL_PATH = _ETL_DIR / 'FACTURA 07-2026 SHIKINA.xls'
 
 
 # ---------------------------------------------------------------------------
