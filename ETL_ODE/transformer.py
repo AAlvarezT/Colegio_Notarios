@@ -478,17 +478,18 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
         bank_cfg = config['bancos'].get(bank, {'cuenta_contable': '10100011', 'medio_pago': '008'})
         comprobante = f'{comprobante_index:04d}'
 
+        # D-row: bank summary — document-identity fields must be blank per accounting model
         rows.append({
             'CTA_CONTABLE': str(bank_cfg.get('cuenta_contable', '10100011')),
             'ANO_MES': str(periodo),
             'SUB_DIARIO': str(config.get('sub_diario', '01')),
             'COMPROBANTE': comprobante,
             'FEC_DOC': month_end,
-            'TIP_ANEXO': str(config.get('tipo_anexo', '02')),
+            'TIP_ANEXO': '',
             'COD_ANEXO': '',
-            'TIP_DOC': str(config.get('tipo_documento', '01')),
+            'TIP_DOC': '',
             'SERIE_NUM': '',
-            'FEC_VENC': month_end,
+            'FEC_VENC': '',
             'MONEDA': str(config.get('moneda', 'MN')),
             'IMPORT_TOTAL': round(float(bank_rows['importe_cancelado'].sum()), 2),
             'TIP_CONEVR.': str(config.get('tipo_conversion', 'VTA')),
@@ -501,6 +502,7 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
             'DEBE HABER': 'D',
             'MEDIO_PAGO': str(bank_cfg.get('medio_pago', '008')),
             'NRO_FILE': '',
+            '_banco': bank,
         })
 
         for _, row in bank_rows.iterrows():
@@ -542,11 +544,13 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
                 'DEBE HABER': 'H',
                 'MEDIO_PAGO': str(bank_cfg.get('medio_pago', '008')),
                 'NRO_FILE': '',
+                '_banco': bank,
             })
 
         comprobante_index += 1
 
-    output = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+    # Build with aux _banco column; caller strips it before export
+    output = pd.DataFrame(rows, columns=OUTPUT_COLUMNS + ['_banco'])
     for column in ['COMPROBANTE', 'COD_ANEXO', 'SERIE_NUM', 'MONEDA', 'DOC_ANULADO', 'MEDIO_PAGO', 'ANO_MES']:
         output[column] = output[column].fillna('').astype(str)
     output = output.replace({np.nan: ''})
@@ -560,10 +564,15 @@ def build_conciliacion(carga: pd.DataFrame) -> List[Dict[str, Any]]:
         return []
     rows: List[Dict[str, Any]] = []
     for comprobante, grupo in carga.groupby('COMPROBANTE', sort=False):
-        banco = str(grupo['MEDIO_PAGO'].iloc[0]) if not grupo.empty else 'N/A'
-        cantidad = int(len(grupo))
+        # Use _banco aux column when present; fall back to MEDIO_PAGO only if absent
+        if '_banco' in grupo.columns:
+            banco = str(grupo['_banco'].iloc[0])
+        else:
+            banco = str(grupo['MEDIO_PAGO'].iloc[0]) if not grupo.empty else 'N/A'
+        mov_h = grupo[grupo['DEBE HABER'] == 'H']
+        cantidad = int(len(mov_h))
         debito = float(grupo[grupo['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum())
-        credito = float(grupo[grupo['DEBE HABER'] == 'H']['IMPORT_TOTAL'].sum())
+        credito = float(mov_h['IMPORT_TOTAL'].sum())
         diferencia = abs(debito - credito)
         estado = 'CUADRADO' if diferencia <= 0.01 else 'REVISAR'
         rows.append({
@@ -578,10 +587,11 @@ def build_conciliacion(carga: pd.DataFrame) -> List[Dict[str, Any]]:
 
     total_debito = float(carga[carga['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum())
     total_credito = float(carga[carga['DEBE HABER'] == 'H']['IMPORT_TOTAL'].sum())
+    total_h = int((carga['DEBE HABER'] == 'H').sum())
     rows.append({
         'banco': 'TOTAL',
         'comprobante': 'TOTAL',
-        'cantidad': int(len(carga)),
+        'cantidad': total_h,
         'debito': round(total_debito, 2),
         'credito': round(total_credito, 2),
         'diferencia': round(abs(total_debito - total_credito), 2),
@@ -644,7 +654,15 @@ def create_validation_report(summary: Dict[str, Any], source_path: Path, output_
                 cell.font = font
 
 
+# Column letter indices (1-based) for format application
+_DATE_COLS = {'E', 'J', 'N'}   # FEC_DOC, FEC_VENC, FEC_REG
+_NUM_COL = 'L'                  # IMPORT_TOTAL
+_TEXT_COLS = {'A', 'B', 'C', 'D', 'G', 'H', 'I', 'U', 'V'}  # text-type accounting codes
+
+
 def export_carga_workbook(output_df: pd.DataFrame, output_path: Path, file_label: str = 'CARGA') -> None:
+    # Strip aux _banco column — final Excel must contain exactly OUTPUT_COLUMNS
+    export = output_df[OUTPUT_COLUMNS].copy() if '_banco' in output_df.columns else output_df.copy()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb = None
     try:
@@ -655,7 +673,7 @@ def export_carga_workbook(output_df: pd.DataFrame, output_path: Path, file_label
         ws.title = 'Hoja1'
         ws.freeze_panes = 'A2'
         ws.append(list(OUTPUT_COLUMNS))
-        for _, row in output_df.iterrows():
+        for _, row in export.iterrows():
             values = []
             for col in OUTPUT_COLUMNS:
                 value = row.get(col, '')
@@ -669,6 +687,17 @@ def export_carga_workbook(output_df: pd.DataFrame, output_path: Path, file_label
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
+        # Apply number formats from row 2 onward
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            for cell in row:
+                col_letter = cell.column_letter
+                if col_letter in _DATE_COLS:
+                    if cell.value not in ('', None):
+                        cell.number_format = 'DD/MM/YYYY'
+                elif col_letter == _NUM_COL:
+                    cell.number_format = '0.00'
+                elif col_letter in _TEXT_COLS:
+                    cell.number_format = '@'
         for col in ws.columns:
             max_len = 0
             for cell in col:
@@ -776,6 +805,7 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
     if report_file.exists():
         report_file = output_dir / f'REPORTE_VALIDACION_ODE_{periodo}_{datetime.now().strftime("%Y%m%d%H%M%S")}.xlsx'
 
+    # Pass carga with _banco for conciliation; export strips it automatically
     export_carga_workbook(carga, out_file, 'CARGA')
     create_validation_report(summary, source_path, report_file)
     result = {
@@ -796,7 +826,7 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
         'report_file': str(report_file),
         'processed_df': processed,
         'excluded_df': excluded,
-        'output_df': carga,
+        'output_df': carga,  # includes _banco aux column for caller inspection
         'errors': errors,
         'warnings': warnings,
         'info': info,
