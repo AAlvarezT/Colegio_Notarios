@@ -20,3 +20,6 @@ logs/
 # Datos reales del ETL ODE
 ETL_ODE/*.xlsx
 ETL_ODE/*.xls
+
+.venv_build/
+**/.venv_build/
