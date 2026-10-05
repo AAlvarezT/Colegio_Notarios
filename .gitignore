@@ -1,0 +1,22 @@
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# PyInstaller
+build/
+**/build/
+dist/
+**/dist/
+
+# Archivos generados
+salida/
+**/salida/
+logs/
+**/logs/
+
+# Datos reales del ETL ODE
+ETL_ODE/*.xlsx
+ETL_ODE/*.xls

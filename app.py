@@ -238,17 +238,19 @@ class ConversorODEApp(tk.Tk):
         if not source_path:
             messagebox.showwarning('Archivo requerido', 'Debe seleccionar un reporte de cancelados.')
             return
+        periodo = f"{int(self.year_var.get()):04d}{self.month_var.get()}"
+        fecha_calculo = self.date_selector.get()
         self.progress['value'] = 10
         self.status_label.config(text='Analizando reporte...')
-        thread = threading.Thread(target=self._analyze_worker, args=(source_path,), daemon=True)
+        thread = threading.Thread(target=self._analyze_worker, args=(source_path, periodo, fecha_calculo), daemon=True)
         thread.start()
 
-    def _analyze_worker(self, source_path: str) -> None:
+    def _analyze_worker(self, source_path: str, periodo: str, fecha_calculo: str) -> None:
         try:
             df = load_ode_report(source_path)
             excluded = df[df['serie'].astype(str).str.startswith('0001')].copy()
             processed = df[~df['serie'].astype(str).str.startswith('0001')].copy()
-            errors, warnings, info = validate_report(processed)
+            errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo)
             self.analysis_df = processed
             self.last_result = {'processed': processed, 'excluded': excluded, 'errors': errors, 'warnings': warnings, 'info': info}
             self.after(0, lambda: self._refresh_analysis(processed, excluded, errors, warnings, info))
@@ -285,6 +287,8 @@ class ConversorODEApp(tk.Tk):
         if not source_path:
             messagebox.showwarning('Archivo requerido', 'Debe seleccionar un reporte antes de generar la carga.')
             return
+        periodo = f"{int(self.year_var.get()):04d}{self.month_var.get()}"
+        fecha_calculo = self.date_selector.get()
         self.progress['value'] = 5
         self.status_label.config(text='Generando carga...')
         cfg = self.config.copy()
@@ -296,12 +300,19 @@ class ConversorODEApp(tk.Tk):
                 'medio_pago': fields['medio'].get().strip() or '008',
             }
         self.config = cfg
-        thread = threading.Thread(target=self._generate_worker, args=(source_path, output_dir, cfg), daemon=True)
+        thread = threading.Thread(target=self._generate_worker, args=(source_path, output_dir, cfg, periodo, fecha_calculo), daemon=True)
         thread.start()
 
-    def _generate_worker(self, source_path: str, output_dir: str, cfg: dict) -> None:
+    def _generate_worker(self, source_path: str, output_dir: str, cfg: dict, periodo: str, fecha_calculo: str) -> None:
         try:
-            result = process_report(source_path, output_dir, cfg, self.date_selector.get())
+            result = process_report(
+                source_path,
+                output_dir,
+                cfg,
+                fecha_calculo=fecha_calculo,
+                periodo=periodo,
+                model_path=self.model_label.get() or None,
+            )
             self.after(0, lambda: self._finish_generation(result))
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror('Error al generar', str(exc)))

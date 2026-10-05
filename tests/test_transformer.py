@@ -12,6 +12,7 @@ from transformer import (
     normalize_document_value,
     normalize_serie,
     parse_date_value,
+    process_report,
     serialize_serie_num,
 )
 
@@ -120,6 +121,23 @@ def test_exportacion_sin_nan_ni_nat():
     text = out.astype(str)
     assert not text.apply(lambda col: col.str.contains('nan', case=False)).any().any()
     assert not text.apply(lambda col: col.str.contains('nat', case=False)).any().any()
+
+
+def test_process_report_real_report_generates_valid_carga(tmp_path):
+    result = process_report(
+        SOURCE_PATH,
+        tmp_path,
+        config={},
+        fecha_calculo='fecha_cancelacion',
+        periodo='202608',
+        model_path=MODEL_PATH,
+    )
+    carga = result['output_df']
+    assert carga['IMPORT_TOTAL'].gt(0).any()
+    assert abs(carga[carga['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum() - carga[carga['DEBE HABER'] == 'H']['IMPORT_TOTAL'].sum()) <= 0.01
+    assert not carga[carga['DEBE HABER'] == 'H']['SERIE_NUM'].astype(str).str.strip().eq('').any()
+    assert not carga[carga['DEBE HABER'] == 'H']['COD_ANEXO'].astype(str).str.strip().eq('').any()
+    assert result['summary']['resultado'] == 'CUADRADO'
 
 
 def test_model_file_uses_expected_structure():
