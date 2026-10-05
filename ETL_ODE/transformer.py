@@ -20,6 +20,8 @@ OUTPUT_COLUMNS = [
 ]
 
 BANK_PRIORITY = ['INTERBANK', 'BBVA CONTINENTAL', 'DE LA NACION', 'OTROS']
+LEGACY_OTROS_CFG = {'cuenta_contable': '10100011', 'medio_pago': '008'}
+OTROS_CASH_CFG = {'cuenta_contable': '10100001', 'medio_pago': ''}
 DEFAULT_CONFIG = {
     'cuenta_clientes': '12120001',
     'sub_diario': '01',
@@ -34,9 +36,16 @@ DEFAULT_CONFIG = {
         'INTERBANK': {'cuenta_contable': '10100011', 'medio_pago': '008'},
         'BBVA CONTINENTAL': {'cuenta_contable': '10100011', 'medio_pago': '008'},
         'DE LA NACION': {'cuenta_contable': '10100011', 'medio_pago': '008'},
-        'OTROS': {'cuenta_contable': '10100011', 'medio_pago': '008'},
+        'OTROS': {'cuenta_contable': '10100001', 'medio_pago': ''},
     },
 }
+
+
+def get_bank_default_config(bank_name: str) -> Dict[str, str]:
+    norm = normalize_bank_name(bank_name)
+    if norm == 'OTROS':
+        return {'cuenta_contable': '10100001', 'medio_pago': ''}
+    return {'cuenta_contable': '10100011', 'medio_pago': '008'}
 
 
 def get_app_dir() -> Path:
@@ -345,14 +354,31 @@ def validate_model_structure(model_path: Optional[str | Path], expected_columns:
         )
 
 
+def migrate_legacy_otros_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(config, dict):
+        return config
+    bancos = config.get('bancos', {})
+    if not isinstance(bancos, dict):
+        return config
+    otros_cfg = bancos.get('OTROS')
+    if not isinstance(otros_cfg, dict):
+        return config
+    cuenta = str(otros_cfg.get('cuenta_contable', '')).strip()
+    medio = str(otros_cfg.get('medio_pago', '')).strip()
+    if cuenta == LEGACY_OTROS_CFG['cuenta_contable'] and medio == LEGACY_OTROS_CFG['medio_pago']:
+        bancos['OTROS'] = {'cuenta_contable': '10100001', 'medio_pago': ''}
+        config['bancos'] = bancos
+    return config
+
+
 def auto_create_bank_config(config: Dict[str, Any], nombre_banco: str) -> Dict[str, Any]:
     config = config or {'bancos': {}}
     config.setdefault('bancos', {})
     bank_name = normalize_bank_name(nombre_banco)
     if not bank_name:
-        return {'cuenta_contable': '10100011', 'medio_pago': '008'}
+        return get_bank_default_config('')
     if bank_name not in config['bancos']:
-        config['bancos'][bank_name] = {'cuenta_contable': '10100011', 'medio_pago': '008'}
+        config['bancos'][bank_name] = get_bank_default_config(bank_name)
     return config['bancos'][bank_name]
 
 
@@ -366,6 +392,7 @@ def load_config(path: str | Path | None = None) -> Dict[str, Any]:
         return default
     with open(config_path, 'r', encoding='utf-8') as fh:
         loaded = json.load(fh)
+    loaded = migrate_legacy_otros_config(loaded)
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     merged.update(loaded)
     merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **loaded.get('bancos', {})}
@@ -444,7 +471,7 @@ def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calcu
             info.append(f'Se encontraron {len(series_0001)} registros de serie 0001 y fueron excluidos en la fase previa.')
 
     if 'banco' in df.columns and 'OTROS' in df['banco'].astype(str).unique():
-        warnings.append('Los movimientos OTROS pueden corresponder a una retención del 3%. Verifique la cuenta contable configurada.')
+        warnings.append('Los movimientos OTROS se registrarán como cobros en efectivo/Caja con la cuenta 10100001 y sin medio de pago.')
 
     if not errors:
         info.append('Archivo legible y con estructura válida.')
@@ -475,12 +502,12 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
         bank_rows = processed_df[processed_df['banco'].astype(str) == bank].copy()
         if bank_rows.empty:
             continue
-        bank_cfg = config['bancos'].get(bank, {'cuenta_contable': '10100011', 'medio_pago': '008'})
+        bank_cfg = config['bancos'].get(bank, get_bank_default_config(bank))
         comprobante = f'{comprobante_index:04d}'
 
         # D-row: bank summary — document-identity fields must be blank per accounting model
         rows.append({
-            'CTA_CONTABLE': str(bank_cfg.get('cuenta_contable', '10100011')),
+            'CTA_CONTABLE': str(bank_cfg.get('cuenta_contable', get_bank_default_config(bank)['cuenta_contable'])),
             'ANO_MES': str(periodo),
             'SUB_DIARIO': str(config.get('sub_diario', '01')),
             'COMPROBANTE': comprobante,
@@ -500,7 +527,7 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
             'GLOSA_MOV': str(config.get('glosa', 'COBRANZA DEL MES')),
             'DOC_ANULADO': str(config.get('doc_anulado', '0')),
             'DEBE HABER': 'D',
-            'MEDIO_PAGO': str(bank_cfg.get('medio_pago', '008')),
+            'MEDIO_PAGO': '' if bank_cfg.get('medio_pago') is None else str(bank_cfg.get('medio_pago', '')),
             'NRO_FILE': '',
             '_banco': bank,
         })
@@ -542,7 +569,7 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
                 'GLOSA_MOV': str(config.get('glosa', 'COBRANZA DEL MES')),
                 'DOC_ANULADO': str(config.get('doc_anulado', '0')),
                 'DEBE HABER': 'H',
-                'MEDIO_PAGO': str(bank_cfg.get('medio_pago', '008')),
+                'MEDIO_PAGO': '' if bank_cfg.get('medio_pago') is None else str(bank_cfg.get('medio_pago', '')),
                 'NRO_FILE': '',
                 '_banco': bank,
             })

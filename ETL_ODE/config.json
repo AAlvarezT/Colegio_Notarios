@@ -22,8 +22,8 @@
       "medio_pago": "008"
     },
     "OTROS": {
-      "cuenta_contable": "10100011",
-      "medio_pago": "008"
+      "cuenta_contable": "10100001",
+      "medio_pago": ""
     }
   }
 }

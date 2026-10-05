@@ -1,0 +1,25 @@
+Conversor de cobranzas ODE
+
+1. Descomprime completamente el archivo ZIP del proyecto.
+2. Abre la carpeta ETL_ODE.
+3. Ejecuta Conversor_ODE.exe.
+4. Selecciona el reporte de cancelados de ODE.
+5. Selecciona el Excel modelo del estudio.
+6. Indica el periodo (por ejemplo 202608).
+7. Pulsa "Analizar archivos".
+8. Verifica que aparezca "LISTO PARA GENERAR".
+9. Pulsa "Generar carga".
+10. Verifica que la diferencia sea S/ 0.00 y que el estado final sea "CUADRADO".
+11. Abre la carpeta de salida para revisar los archivos generados.
+
+Consideraciones importantes:
+- Las series 0001 se excluyen automáticamente.
+- Interbank, BBVA y Banco de la Nación se procesan por separado.
+- "OTROS" se registra como cobro en efectivo/Caja en la cuenta 10100001, sin medio de pago.
+- Los archivos resultantes se guardan en la carpeta salida.
+- No cierres el programa mientras esté procesando.
+- El archivo original no se modifica.
+
+La salida incluye:
+- CARGA_COBRANZAS_ODE_YYYYMM.xlsx
+- REPORTE_VALIDACION_ODE_YYYYMM.xlsx

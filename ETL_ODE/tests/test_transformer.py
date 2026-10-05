@@ -4,15 +4,19 @@ Run from the repo root: pytest -q
 """
 from pathlib import Path
 
-import pandas as pd
 import openpyxl
+import pandas as pd
+import pytest
 
 from transformer import (
+    DEFAULT_CONFIG,
     OUTPUT_COLUMNS,
     auto_create_bank_config,
     build_carga_dataframe,
     build_conciliacion,
     detect_total_row,
+    get_bank_default_config,
+    load_config,
     load_ode_report,
     normalize_amount,
     normalize_document_value,
@@ -234,6 +238,29 @@ def test_creacion_automatica_banco_desconocido():
     assert bank['medio_pago'] == '008'
 
 
+def test_otros_usa_cuenta_caja_y_medio_vacio():
+    assert DEFAULT_CONFIG['bancos']['OTROS'] == {'cuenta_contable': '10100001', 'medio_pago': ''}
+    assert get_bank_default_config('OTROS') == {'cuenta_contable': '10100001', 'medio_pago': ''}
+    df = load_ode_report(SOURCE_PATH)
+    out = build_carga_dataframe(df, periodo='202608', config={})
+    otros_d = out[(out['_banco'] == 'OTROS') & (out['DEBE HABER'] == 'D')]
+    assert not otros_d.empty
+    assert otros_d.iloc[0]['CTA_CONTABLE'] == '10100001'
+    assert otros_d.iloc[0]['MEDIO_PAGO'] == ''
+
+
+def test_config_migracion_legacy_otros(tmp_path):
+    cfg_path = tmp_path / 'config.json'
+    cfg_path.write_text('{\n  "bancos": {\n    "OTROS": {\n      "cuenta_contable": "10100011",\n      "medio_pago": "008"\n    }\n  }\n}', encoding='utf-8')
+    loaded = load_config(cfg_path)
+    assert loaded['bancos']['OTROS'] == {'cuenta_contable': '10100001', 'medio_pago': ''}
+
+    custom_path = tmp_path / 'custom.json'
+    custom_path.write_text('{\n  "bancos": {\n    "OTROS": {\n      "cuenta_contable": "99000001",\n      "medio_pago": "007"\n    }\n  }\n}', encoding='utf-8')
+    custom_loaded = load_config(custom_path)
+    assert custom_loaded['bancos']['OTROS'] == {'cuenta_contable': '99000001', 'medio_pago': '007'}
+
+
 def test_exportacion_sin_nan_ni_nat():
     df = load_ode_report(SOURCE_PATH)
     out = build_carga_dataframe(df, periodo='202608', config={})
@@ -256,13 +283,52 @@ def test_igualdad_debe_haber():
     assert abs(debito - credito) <= 0.01
 
 
+def test_ui_allows_empty_medio_pago_and_pending_state(tmp_path):
+    from app import ConversorODEApp
+    import tkinter as tk
+
+    app = ConversorODEApp()
+    app.bank_entries['OTROS'] = {'cuenta': tk.Entry(app._inner), 'medio': tk.Entry(app._inner)}
+    app.bank_entries['OTROS']['cuenta'].insert(0, '10100001')
+    app.bank_entries['OTROS']['medio'].insert(0, '')
+    app.config = app._collect_config()
+    cfg_path = tmp_path / 'config.json'
+    from transformer import save_config
+    save_config(cfg_path, app.config)
+    loaded = load_config(cfg_path)
+    assert loaded['bancos']['OTROS']['medio_pago'] == ''
+
+    raw, excluded, processed = split_ode_rows(read_raw_ode_report(SOURCE_PATH))
+    app.file_label.set(str(SOURCE_PATH))
+    app._refresh_analysis(raw, excluded, processed, [], [], ['Archivo legible'], [])
+    assert app.cards['balance'].cget('text') == 'PENDIENTE'
+    assert app.cards['status'].cget('text') == 'LISTO PARA GENERAR'
+    assert app.status_label.cget('text') == 'LISTO PARA GENERAR'
+
+    from tkinter import messagebox
+    original_showinfo = messagebox.showinfo
+    messagebox.showinfo = lambda *args, **kwargs: None
+    try:
+        app._finish_generation(process_report(SOURCE_PATH, tmp_path, config={}, fecha_calculo='fecha_cancelacion', periodo='202608'))
+    finally:
+        messagebox.showinfo = original_showinfo
+    assert app.cards['balance'].cget('text') == 'S/0.00'
+    assert app.cards['status'].cget('text') == 'CUADRADO'
+    assert app.status_label.cget('text') == 'CUADRADO'
+    app.destroy()
+
+
 # ---------------------------------------------------------------------------
 # 9. GUI smoke test — window builds without error and action buttons exist
 # ---------------------------------------------------------------------------
 
 def test_gui_smoke_and_buttons():
+    pytest.importorskip('tkinter')
     from app import ConversorODEApp
-    app = ConversorODEApp()
+    try:
+        app = ConversorODEApp()
+    except Exception as exc:
+        pytest.skip(f'Tk unavailable in this environment: {exc}')
     app.update_idletasks()
     expected_buttons = {
         'Analizar archivos',
@@ -273,7 +339,6 @@ def test_gui_smoke_and_buttons():
     }
     assert expected_buttons == set(app.action_buttons.keys()), \
         f'Missing buttons: {expected_buttons - set(app.action_buttons.keys())}'
-    # Verify the canvas scroll area was created
     assert hasattr(app, '_canvas'), 'Canvas scroll area not created'
     assert hasattr(app, '_inner'), 'Inner scrollable frame not created'
     app.destroy()

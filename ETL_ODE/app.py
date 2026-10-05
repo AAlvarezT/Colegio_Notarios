@@ -12,6 +12,7 @@ import pandas as pd
 from transformer import (
     DEFAULT_CONFIG,
     get_app_dir,
+    get_bank_default_config,
     load_config,
     normalize_bank_name,
     process_report,
@@ -309,10 +310,9 @@ class ConversorODEApp(tk.Tk):
         medio = tk.Entry(row, width=10, font=('Segoe UI', 10), relief='solid')
         medio.pack(side='left')
         self.bank_entries[bank_name] = {'cuenta': account, 'medio': medio}
-        bank_cfg = self.config.get('bancos', {}).get(
-            bank_name, {'cuenta_contable': '10100011', 'medio_pago': '008'})
-        account.insert(0, bank_cfg.get('cuenta_contable', '10100011'))
-        medio.insert(0, bank_cfg.get('medio_pago', '008'))
+        bank_cfg = self.config.get('bancos', {}).get(bank_name, get_bank_default_config(bank_name))
+        account.insert(0, str(bank_cfg.get('cuenta_contable', get_bank_default_config(bank_name)['cuenta_contable'])))
+        medio.insert(0, '' if bank_cfg.get('medio_pago') is None else str(bank_cfg.get('medio_pago', '')))
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -323,12 +323,11 @@ class ConversorODEApp(tk.Tk):
             entry.delete(0, tk.END)
             entry.insert(0, str(self.config.get(key, DEFAULT_CONFIG.get(key, ''))))
         for bank_name, fields in self.bank_entries.items():
-            bank_cfg = self.config.get('bancos', {}).get(
-                bank_name, {'cuenta_contable': '10100011', 'medio_pago': '008'})
+            bank_cfg = self.config.get('bancos', {}).get(bank_name, get_bank_default_config(bank_name))
             fields['cuenta'].delete(0, tk.END)
-            fields['cuenta'].insert(0, bank_cfg.get('cuenta_contable', '10100011'))
+            fields['cuenta'].insert(0, str(bank_cfg.get('cuenta_contable', get_bank_default_config(bank_name)['cuenta_contable'])))
             fields['medio'].delete(0, tk.END)
-            fields['medio'].insert(0, bank_cfg.get('medio_pago', '008'))
+            fields['medio'].insert(0, '' if bank_cfg.get('medio_pago') is None else str(bank_cfg.get('medio_pago', '')))
 
     def _collect_config(self) -> dict:
         cfg = self.config.copy()
@@ -336,9 +335,10 @@ class ConversorODEApp(tk.Tk):
             cfg[key] = entry.get().strip()
         cfg['bancos'] = dict(cfg.get('bancos', {}))
         for bank_name, fields in self.bank_entries.items():
+            defaults = get_bank_default_config(bank_name)
             cfg['bancos'][bank_name] = {
-                'cuenta_contable': fields['cuenta'].get().strip() or '10100011',
-                'medio_pago': fields['medio'].get().strip() or '008',
+                'cuenta_contable': fields['cuenta'].get().strip() or defaults['cuenta_contable'],
+                'medio_pago': fields['medio'].get().strip(),
             }
         return cfg
 
@@ -409,18 +409,22 @@ class ConversorODEApp(tk.Tk):
                 raw, excluded, processed, errors, warnings, info, new_banks))
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror('Error', str(exc)))
-            self.after(0, lambda: self.status_label.config(text='Error al analizar'))
+            self.after(0, lambda: self.status_label.config(text='ERROR AL ANALIZAR'))
         finally:
             self.after(0, lambda: self.progress.configure(value=100))
 
     def _refresh_analysis(self, raw: pd.DataFrame, excluded: pd.DataFrame,
                           processed: pd.DataFrame, errors: list,
                           warnings: list, info: list, new_banks: list) -> None:
-        self.status_label.config(text='Análisis finalizado')
+        self.status_label.config(text='LISTO PARA GENERAR')
 
         for bank_name in new_banks:
-            is_generic = (self.config.get('bancos', {}).get(bank_name, {})
-                          .get('cuenta_contable', '10100011') == '10100011')
+            defaults = get_bank_default_config(bank_name)
+            current = self.config.get('bancos', {}).get(bank_name, {})
+            is_generic = (
+                str(current.get('cuenta_contable', defaults['cuenta_contable'])).strip() == defaults['cuenta_contable']
+                and str(current.get('medio_pago', defaults['medio_pago'])).strip() == str(defaults['medio_pago'])
+            )
             self._add_bank_row(bank_name, warn=is_generic)
         if new_banks:
             warnings = list(warnings) + [
@@ -440,8 +444,8 @@ class ConversorODEApp(tk.Tk):
         self.cards['excluded'].config(text=str(len(excluded)))
         self.cards['processed'].config(text=str(len(processed)))
         self.cards['total'].config(text=f'S/{total:,.2f}')
-        self.cards['balance'].config(text='0.00')
-        self.cards['status'].config(text='LISTO' if not errors else 'REVISAR')
+        self.cards['balance'].config(text='PENDIENTE')
+        self.cards['status'].config(text='LISTO PARA GENERAR' if not errors else 'REVISAR')
 
         lines = (
             [f'[ERROR] {m}' for m in errors]
@@ -492,15 +496,17 @@ class ConversorODEApp(tk.Tk):
             self.after(0, lambda: self.progress.configure(value=100))
 
     def _finish_generation(self, result: dict) -> None:
-        self.status_label.config(text='Carga generada')
         self.last_result = result
         s = result['summary']
+        diff = float(s.get('diferencia', 0.0))
+        state_text = str(s.get('resultado', 'LISTO'))
         self.cards['found'].config(text=str(s.get('cantidad_original', 0)))
         self.cards['excluded'].config(text=str(s.get('cantidad_excluida', 0)))
         self.cards['processed'].config(text=str(s.get('cantidad_procesada', 0)))
         self.cards['total'].config(text=f"S/{float(s.get('total_procesado', 0.0)):,.2f}")
-        self.cards['balance'].config(text=f"S/{float(s.get('diferencia', 0.0)):.2f}")
-        self.cards['status'].config(text=str(s.get('resultado', 'LISTO')))
+        self.cards['balance'].config(text=f"S/{diff:,.2f}")
+        self.cards['status'].config(text=state_text)
+        self.status_label.config(text=state_text)
         self.validation_box.delete('1.0', tk.END)
         lines = (
             [f'[ADVERTENCIA] {m}' for m in result.get('warnings', [])]
@@ -533,7 +539,7 @@ class ConversorODEApp(tk.Tk):
         self.validation_box.delete('1.0', tk.END)
         self.preview.delete(*self.preview.get_children())
         self.progress['value'] = 0
-        self.status_label.config(text='Listo')
+        self.status_label.config(text='LISTO')
         self.config = load_config(APP_DIR / 'config.json')
         self._apply_config_to_fields()
 
