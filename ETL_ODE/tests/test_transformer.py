@@ -243,10 +243,67 @@ def test_otros_usa_cuenta_caja_y_medio_vacio():
     assert get_bank_default_config('OTROS') == {'cuenta_contable': '10100001', 'medio_pago': ''}
     df = load_ode_report(SOURCE_PATH)
     out = build_carga_dataframe(df, periodo='202608', config={})
+
     otros_d = out[(out['_banco'] == 'OTROS') & (out['DEBE HABER'] == 'D')]
-    assert not otros_d.empty
+    assert not otros_d.empty, 'No OTROS D-rows found'
     assert otros_d.iloc[0]['CTA_CONTABLE'] == '10100001'
     assert otros_d.iloc[0]['MEDIO_PAGO'] == ''
+
+    otros_h = out[(out['_banco'] == 'OTROS') & (out['DEBE HABER'] == 'H')]
+    assert not otros_h.empty, 'No OTROS H-rows found'
+    for idx, row in otros_h.iterrows():
+        assert row['MEDIO_PAGO'] == '', (
+            f'H-row at index {idx} has non-empty MEDIO_PAGO: {row["MEDIO_PAGO"]!r}'
+        )
+
+
+def test_otros_excel_medio_pago_realmente_vacio(tmp_path):
+    """MEDIO_PAGO must be genuinely empty (None or '') in the exported .xlsx for all OTROS rows."""
+    df = load_ode_report(SOURCE_PATH)
+    carga = build_carga_dataframe(df, periodo='202608', config={})
+
+    # All OTROS rows (D and H) must have empty MEDIO_PAGO in the DataFrame
+    otros_rows = carga[carga['_banco'] == 'OTROS']
+    assert not otros_rows.empty, 'No OTROS rows found in carga DataFrame'
+    for idx, row in otros_rows.iterrows():
+        assert row['MEDIO_PAGO'] == '', (
+            f'DataFrame OTROS row {idx} (DEBE HABER={row["DEBE HABER"]!r}) '
+            f'has non-empty MEDIO_PAGO: {row["MEDIO_PAGO"]!r}'
+        )
+
+    otros_d = otros_rows[otros_rows['DEBE HABER'] == 'D']
+    assert not otros_d.empty, 'No OTROS D-rows found'
+    otros_comprobante = str(otros_d.iloc[0]['COMPROBANTE'])
+
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    wb = openpyxl.load_workbook(result['output_file'])
+    ws = wb.active
+
+    headers = [cell.value for cell in ws[1]]
+    medio_col = headers.index('MEDIO_PAGO') + 1      # 1-based
+    cta_col   = headers.index('CTA_CONTABLE') + 1
+    dh_col    = headers.index('DEBE HABER') + 1
+    comp_col  = headers.index('COMPROBANTE') + 1
+
+    otros_xlsx_rows = 0
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        cta  = row[cta_col  - 1].value
+        dh   = row[dh_col   - 1].value
+        comp = str(row[comp_col - 1].value) if row[comp_col - 1].value is not None else ''
+
+        is_otros_d = (cta == '10100001' and dh == 'D')
+        is_otros_h = (comp == otros_comprobante and dh == 'H')
+        if is_otros_d or is_otros_h:
+            otros_xlsx_rows += 1
+            medio_val = row[medio_col - 1].value
+            assert medio_val in (None, ''), (
+                f'xlsx row {row[0].row}: MEDIO_PAGO should be empty, got {medio_val!r}'
+            )
+
+    assert otros_xlsx_rows > 0, 'No OTROS rows identified in the exported xlsx'
 
 
 def test_config_migracion_legacy_otros(tmp_path):
@@ -300,6 +357,18 @@ def test_ui_allows_empty_medio_pago_and_pending_state(tmp_path):
 
     raw, excluded, processed = split_ode_rows(read_raw_ode_report(SOURCE_PATH))
     app.file_label.set(str(SOURCE_PATH))
+
+    # --- Escenario con errores: debe mostrar REVISAR (no LISTO PARA GENERAR) ---
+    errors = ['Error de prueba: encabezado no encontrado']
+    app._refresh_analysis(raw, excluded, processed, errors, [], [], [])
+    assert app.cards['balance'].cget('text') == 'PENDIENTE', \
+        'balance debe ser PENDIENTE cuando hay errores'
+    assert app.cards['status'].cget('text') == 'REVISAR', \
+        f"cards['status'] debe ser REVISAR, fue {app.cards['status'].cget('text')!r}"
+    assert app.status_label.cget('text') == 'REVISAR', \
+        f"status_label debe ser REVISAR, fue {app.status_label.cget('text')!r}"
+
+    # --- Escenario sin errores: debe mostrar LISTO PARA GENERAR ---
     app._refresh_analysis(raw, excluded, processed, [], [], ['Archivo legible'], [])
     assert app.cards['balance'].cget('text') == 'PENDIENTE'
     assert app.cards['status'].cget('text') == 'LISTO PARA GENERAR'

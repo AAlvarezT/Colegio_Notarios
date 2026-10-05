@@ -8,7 +8,7 @@ Aplicación para transformar el reporte de comprobantes cancelados de la Notarí
 
 ## Inicio rápido
 1. Descomprime completamente el ZIP del proyecto.
-2. Ejecuta `Conversor_ODE.exe`.
+2. Ejecuta `dist\Conversor_ODE.exe`.
 3. Selecciona el reporte de cancelados de ODE.
 4. Selecciona el Excel modelo del estudio.
 5. Indica el periodo.

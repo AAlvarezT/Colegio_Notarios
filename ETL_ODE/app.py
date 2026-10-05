@@ -416,7 +416,8 @@ class ConversorODEApp(tk.Tk):
     def _refresh_analysis(self, raw: pd.DataFrame, excluded: pd.DataFrame,
                           processed: pd.DataFrame, errors: list,
                           warnings: list, info: list, new_banks: list) -> None:
-        self.status_label.config(text='LISTO PARA GENERAR')
+        state_after_analysis = 'LISTO PARA GENERAR' if not errors else 'REVISAR'
+        self.status_label.config(text=state_after_analysis)
 
         for bank_name in new_banks:
             defaults = get_bank_default_config(bank_name)
@@ -445,7 +446,7 @@ class ConversorODEApp(tk.Tk):
         self.cards['processed'].config(text=str(len(processed)))
         self.cards['total'].config(text=f'S/{total:,.2f}')
         self.cards['balance'].config(text='PENDIENTE')
-        self.cards['status'].config(text='LISTO PARA GENERAR' if not errors else 'REVISAR')
+        self.cards['status'].config(text=state_after_analysis)
 
         lines = (
             [f'[ERROR] {m}' for m in errors]
