@@ -1,0 +1,29 @@
+{
+  "cuenta_clientes": "12120001",
+  "sub_diario": "01",
+  "tipo_anexo": "02",
+  "tipo_documento": "01",
+  "moneda": "MN",
+  "tipo_conversion": "VTA",
+  "doc_anulado": "0",
+  "glosa": "COBRANZA DEL MES",
+  "fecha_documento": "fecha_cancelacion",
+  "bancos": {
+    "INTERBANK": {
+      "cuenta_contable": "10100011",
+      "medio_pago": "008"
+    },
+    "BBVA CONTINENTAL": {
+      "cuenta_contable": "10100011",
+      "medio_pago": "008"
+    },
+    "DE LA NACION": {
+      "cuenta_contable": "10100011",
+      "medio_pago": "008"
+    },
+    "OTROS": {
+      "cuenta_contable": "10100011",
+      "medio_pago": "008"
+    }
+  }
+}
