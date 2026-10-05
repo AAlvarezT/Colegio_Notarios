@@ -254,3 +254,26 @@ def test_igualdad_debe_haber():
     debito = out[out['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum()
     credito = out[out['DEBE HABER'] == 'H']['IMPORT_TOTAL'].sum()
     assert abs(debito - credito) <= 0.01
+
+
+# ---------------------------------------------------------------------------
+# 9. GUI smoke test — window builds without error and action buttons exist
+# ---------------------------------------------------------------------------
+
+def test_gui_smoke_and_buttons():
+    from app import ConversorODEApp
+    app = ConversorODEApp()
+    app.update_idletasks()
+    expected_buttons = {
+        'Analizar archivos',
+        'Generar carga',
+        'Abrir carpeta de salida',
+        'Restablecer',
+        'Guardar configuración',
+    }
+    assert expected_buttons == set(app.action_buttons.keys()), \
+        f'Missing buttons: {expected_buttons - set(app.action_buttons.keys())}'
+    # Verify the canvas scroll area was created
+    assert hasattr(app, '_canvas'), 'Canvas scroll area not created'
+    assert hasattr(app, '_inner'), 'Inner scrollable frame not created'
+    app.destroy()

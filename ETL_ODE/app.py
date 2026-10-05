@@ -11,7 +11,6 @@ import pandas as pd
 
 from transformer import (
     DEFAULT_CONFIG,
-    build_carga_dataframe,
     get_app_dir,
     load_config,
     normalize_bank_name,
@@ -26,6 +25,8 @@ APP_DIR = get_app_dir()
 
 _WARN_BG = '#fffbe6'
 _WARN_FG = '#b35c00'
+_BG_MAIN = '#edf4fb'
+_BG_WHITE = '#ffffff'
 
 
 def analyze_source(source_path: str) -> tuple:
@@ -39,9 +40,9 @@ class ConversorODEApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title('Conversor de cobranzas ODE')
-        self.geometry('1280x860')
-        self.minsize(1180, 760)
-        self.configure(bg='#f4f7fb')
+        self.geometry('1280x820')
+        self.minsize(960, 600)
+        self.configure(bg=_BG_MAIN)
 
         self.style = ttk.Style(self)
         self.style.theme_use('clam')
@@ -61,67 +62,160 @@ class ConversorODEApp(tk.Tk):
         self._apply_config_to_fields()
 
     # ------------------------------------------------------------------
-    # UI construction
+    # Layout skeleton: fixed header ─ scrollable middle ─ fixed footer
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        top = tk.Frame(self, bg='#0b1b2b', height=92)
-        top.pack(fill='x')
+        # ── Fixed top banner ──────────────────────────────────────────
+        self._build_header()
+
+        # ── Fixed bottom action bar ───────────────────────────────────
+        self._build_footer()
+
+        # ── Scrollable middle canvas ──────────────────────────────────
+        self._build_scroll_area()
+
+        # Content sections go inside self._inner (the scrollable frame)
+        self._build_file_selectors()
+        self._build_config_section()
+        self._build_banks_section()
+        self._build_preview_section()
+        self._build_validation_section()
+        self._build_summary_cards()
+
+        self.output_dir.set(str(APP_DIR / 'salida'))
+        self.source_entry.focus_set()
+
+    def _build_header(self) -> None:
+        top = tk.Frame(self, bg='#0b1b2b')
+        top.pack(side='top', fill='x')
         tk.Label(top, text='Conversor de cobranzas ODE',
-                 bg='#0b1b2b', fg='#ffffff', font=('Segoe UI', 24, 'bold')
-                 ).pack(anchor='w', padx=24, pady=(18, 4))
+                 bg='#0b1b2b', fg='#ffffff', font=('Segoe UI', 22, 'bold')
+                 ).pack(anchor='w', padx=24, pady=(14, 2))
         tk.Label(top, text='Reporte de comprobantes cancelados \u2192 Formato de carga contable',
                  bg='#0b1b2b', fg='#7ec8ff', font=('Segoe UI', 10, 'bold')
-                 ).pack(anchor='w', padx=24)
+                 ).pack(anchor='w', padx=24, pady=(0, 10))
 
-        main = tk.Frame(self, bg='#edf4fb', padx=16, pady=14)
-        main.pack(fill='both', expand=True)
+    def _build_footer(self) -> None:
+        """Action bar pinned to the bottom — always visible regardless of scroll position."""
+        footer = tk.Frame(self, bg='#dce8f5', bd=0)
+        footer.pack(side='bottom', fill='x')
 
-        selector_frame = tk.LabelFrame(main, text='Archivos y periodo',
-                                       bg='#ffffff', fg='#143a57',
-                                       font=('Segoe UI', 11, 'bold'), padx=12, pady=10)
-        selector_frame.pack(fill='x', pady=(0, 12))
+        # separator line
+        tk.Frame(footer, bg='#a8c4e0', height=1).pack(fill='x')
 
-        # File selector rows — width belongs in Label constructor, never in pack()
+        bar = tk.Frame(footer, bg='#dce8f5', padx=14, pady=8)
+        bar.pack(fill='x')
+
+        self.progress = ttk.Progressbar(bar, orient='horizontal', mode='determinate', length=300)
+        self.progress.pack(side='left', padx=(0, 10))
+        self.status_label = tk.Label(bar, text='Listo', bg='#dce8f5', fg='#204a6d',
+                                     font=('Segoe UI', 10, 'bold'))
+        self.status_label.pack(side='left', padx=(0, 14))
+
+        btn_defs = [
+            ('Analizar archivos',       self.analyze_files,      '#1d4d82', 'white'),
+            ('Generar carga',           self.generate_load,      '#2a9d8f', 'white'),
+            ('Abrir carpeta de salida', self.open_output_folder, '#3a6ea5', 'white'),
+            ('Restablecer',             self.reset_all,          '#cbcdd2', '#102a4a'),
+            ('Guardar configuración',   self.save_config_fields, '#e0b03d', '#102a4a'),
+        ]
+        self.action_buttons: dict[str, tk.Button] = {}
+        for text, cmd, bg, fg in btn_defs:
+            btn = tk.Button(bar, text=text, command=cmd, bg=bg, fg=fg,
+                            font=('Segoe UI', 10, 'bold'), padx=14, pady=6, relief='flat')
+            btn.pack(side='left', padx=4)
+            self.action_buttons[text] = btn
+
+    def _build_scroll_area(self) -> None:
+        """Canvas + scrollbar between header and footer."""
+        wrapper = tk.Frame(self, bg=_BG_MAIN)
+        wrapper.pack(side='top', fill='both', expand=True)
+
+        vbar = ttk.Scrollbar(wrapper, orient='vertical')
+        vbar.pack(side='right', fill='y')
+
+        self._canvas = tk.Canvas(wrapper, bg=_BG_MAIN, highlightthickness=0,
+                                 yscrollcommand=vbar.set)
+        self._canvas.pack(side='left', fill='both', expand=True)
+        vbar.configure(command=self._canvas.yview)
+
+        self._inner = tk.Frame(self._canvas, bg=_BG_MAIN, padx=14, pady=10)
+        self._inner_id = self._canvas.create_window((0, 0), window=self._inner, anchor='nw')
+
+        # Keep inner frame width = canvas width
+        self._canvas.bind('<Configure>', self._on_canvas_resize)
+        self._inner.bind('<Configure>', self._on_inner_resize)
+
+        # Mouse-wheel scrolling (Windows + Linux)
+        self._canvas.bind_all('<MouseWheel>', self._on_mousewheel)
+        self._canvas.bind_all('<Button-4>', self._on_mousewheel)
+        self._canvas.bind_all('<Button-5>', self._on_mousewheel)
+
+    def _on_canvas_resize(self, event: tk.Event) -> None:
+        self._canvas.itemconfig(self._inner_id, width=event.width)
+
+    def _on_inner_resize(self, event: tk.Event) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox('all'))
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        if event.num == 4:
+            self._canvas.yview_scroll(-1, 'units')
+        elif event.num == 5:
+            self._canvas.yview_scroll(1, 'units')
+        else:
+            self._canvas.yview_scroll(int(-event.delta / 120), 'units')
+
+    # ------------------------------------------------------------------
+    # Content sections (all packed into self._inner)
+    # ------------------------------------------------------------------
+
+    def _section(self, title: str) -> tk.LabelFrame:
+        return tk.LabelFrame(self._inner, text=title, bg=_BG_WHITE, fg='#143a57',
+                             font=('Segoe UI', 11, 'bold'), padx=12, pady=8)
+
+    def _build_file_selectors(self) -> None:
+        frm = self._section('Archivos y periodo')
+        frm.pack(fill='x', pady=(0, 10))
+
         for label_text, var, attr, cmd in [
-            ('Reporte de cancelados',  self.file_label,  'source_entry', self.select_source),
+            ('Reporte de cancelados',   self.file_label,  'source_entry', self.select_source),
             ('Excel modelo (opcional)', self.model_label, 'model_entry',  self.select_model),
             ('Carpeta de salida',       self.output_dir,  'output_entry', self.select_output),
         ]:
-            row = tk.Frame(selector_frame, bg='#ffffff')
-            row.pack(fill='x', pady=4)
-            tk.Label(row, text=label_text, bg='#ffffff', fg='#0d2140',
+            row = tk.Frame(frm, bg=_BG_WHITE)
+            row.pack(fill='x', pady=3)
+            tk.Label(row, text=label_text, bg=_BG_WHITE, fg='#0d2140',
                      font=('Segoe UI', 10, 'bold'), width=22, anchor='w'
-                     ).pack(side='left', padx=(0, 10))
-            entry = tk.Entry(row, width=70, textvariable=var, font=('Segoe UI', 10), relief='solid')
+                     ).pack(side='left', padx=(0, 8))
+            entry = tk.Entry(row, width=60, textvariable=var,
+                             font=('Segoe UI', 10), relief='solid')
             entry.pack(side='left', fill='x', expand=True)
             tk.Button(row, text='Seleccionar', command=cmd,
-                      bg='#1d4d82', fg='white', relief='flat', padx=10, pady=6
-                      ).pack(side='left', padx=(8, 0))
+                      bg='#1d4d82', fg='white', relief='flat', padx=8, pady=4
+                      ).pack(side='left', padx=(6, 0))
             setattr(self, attr, entry)
 
-        row4 = tk.Frame(selector_frame, bg='#ffffff')
-        row4.pack(fill='x', pady=(8, 0))
-        tk.Label(row4, text='Periodo contable', bg='#ffffff', fg='#0d2140',
+        row4 = tk.Frame(frm, bg=_BG_WHITE)
+        row4.pack(fill='x', pady=(6, 0))
+        tk.Label(row4, text='Periodo contable', bg=_BG_WHITE, fg='#0d2140',
                  font=('Segoe UI', 10, 'bold'), width=22, anchor='w').pack(side='left')
-        tk.Label(row4, text='Año', bg='#ffffff', fg='#0d2140').pack(side='left', padx=(0, 6))
+        tk.Label(row4, text='Año', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
         ttk.Combobox(row4, textvariable=self.year_var,
                      values=[str(y) for y in range(2024, 2036)],
-                     width=8, state='readonly').pack(side='left', padx=(0, 16))
-        tk.Label(row4, text='Mes', bg='#ffffff', fg='#0d2140').pack(side='left', padx=(0, 6))
+                     width=7, state='readonly').pack(side='left', padx=(0, 14))
+        tk.Label(row4, text='Mes', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
         ttk.Combobox(row4, textvariable=self.month_var,
                      values=[f'{i:02d}' for i in range(1, 13)],
-                     width=6, state='readonly').pack(side='left', padx=(0, 16))
-        tk.Label(row4, text='Fecha registro', bg='#ffffff', fg='#0d2140').pack(side='left', padx=(0, 6))
+                     width=5, state='readonly').pack(side='left', padx=(0, 14))
+        tk.Label(row4, text='Fecha registro', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
         ttk.Combobox(row4, textvariable=self.date_selector,
                      values=['fecha_cancelacion', 'fecha_emi', 'ultimo_dia_mes'],
-                     width=20, state='readonly').pack(side='left')
+                     width=18, state='readonly').pack(side='left')
 
-        # Accounting config fields
-        config_frame = tk.LabelFrame(main, text='Configuración contable',
-                                     bg='#ffffff', fg='#143a57',
-                                     font=('Segoe UI', 11, 'bold'), padx=12, pady=10)
-        config_frame.pack(fill='x', pady=(0, 12))
+    def _build_config_section(self) -> None:
+        frm = self._section('Configuración contable')
+        frm.pack(fill='x', pady=(0, 10))
         self.config_entries: dict[str, tk.Entry] = {}
         for label, key in [
             ('Cuenta clientes', 'cuenta_clientes'),
@@ -133,55 +227,49 @@ class ConversorODEApp(tk.Tk):
             ('Doc. anulado',    'doc_anulado'),
             ('Glosa',           'glosa'),
         ]:
-            row = tk.Frame(config_frame, bg='#ffffff')
-            row.pack(fill='x', pady=4)
-            tk.Label(row, text=label, bg='#ffffff', fg='#0d2140',
+            row = tk.Frame(frm, bg=_BG_WHITE)
+            row.pack(fill='x', pady=2)
+            tk.Label(row, text=label, bg=_BG_WHITE, fg='#0d2140',
                      font=('Segoe UI', 10, 'bold'), width=18, anchor='w').pack(side='left')
-            entry = tk.Entry(row, width=24, font=('Segoe UI', 10), relief='solid')
+            entry = tk.Entry(row, width=28, font=('Segoe UI', 10), relief='solid')
             entry.pack(side='left')
             self.config_entries[key] = entry
 
-        # Bank rows (extended dynamically after analysis)
-        self.bank_frame = tk.LabelFrame(main, text='Bancos',
-                                        bg='#ffffff', fg='#143a57',
-                                        font=('Segoe UI', 11, 'bold'), padx=12, pady=10)
-        self.bank_frame.pack(fill='x', pady=(0, 12))
+    def _build_banks_section(self) -> None:
+        self.bank_frame = self._section('Bancos')
+        self.bank_frame.pack(fill='x', pady=(0, 10))
         self.bank_entries: dict[str, dict] = {}
         for name in ['INTERBANK', 'BBVA CONTINENTAL', 'DE LA NACION', 'OTROS']:
             self._add_bank_row(name)
 
-        # Preview table
-        preview_frame = tk.LabelFrame(main, text='Vista previa',
-                                      bg='#ffffff', fg='#143a57',
-                                      font=('Segoe UI', 11, 'bold'), padx=10, pady=8)
-        preview_frame.pack(fill='both', expand=True, pady=(0, 12))
+    def _build_preview_section(self) -> None:
+        frm = self._section('Vista previa')
+        frm.pack(fill='x', pady=(0, 10))
         self.preview = ttk.Treeview(
-            preview_frame,
+            frm,
             columns=('banco', 'serie', 'documento', 'importe', 'fecha'),
-            show='headings', height=9)
+            show='headings', height=6)  # reduced height
         for col, w, anc in [
-            ('banco', 150, 'w'), ('serie', 90, 'w'), ('documento', 110, 'w'),
-            ('importe', 110, 'e'), ('fecha', 120, 'w'),
+            ('banco', 150, 'w'), ('serie', 80, 'w'), ('documento', 100, 'w'),
+            ('importe', 100, 'e'), ('fecha', 110, 'w'),
         ]:
             self.preview.heading(col, text=col.capitalize())
             self.preview.column(col, width=w, anchor=anc)
-        scroll_pv = ttk.Scrollbar(preview_frame, orient='vertical', command=self.preview.yview)
-        self.preview.configure(yscrollcommand=scroll_pv.set)
-        self.preview.pack(side='left', fill='both', expand=True)
-        scroll_pv.pack(side='right', fill='y')
+        sv = ttk.Scrollbar(frm, orient='vertical', command=self.preview.yview)
+        self.preview.configure(yscrollcommand=sv.set)
+        self.preview.pack(side='left', fill='x', expand=True)
+        sv.pack(side='right', fill='y')
 
-        # Validation log
-        val_frame = tk.LabelFrame(main, text='Validaciones y advertencias',
-                                  bg='#ffffff', fg='#143a57',
-                                  font=('Segoe UI', 11, 'bold'), padx=10, pady=8)
-        val_frame.pack(fill='x', pady=(0, 8))
-        self.validation_box = tk.Text(val_frame, height=6, width=100, wrap='word',
+    def _build_validation_section(self) -> None:
+        frm = self._section('Validaciones y advertencias')
+        frm.pack(fill='x', pady=(0, 10))
+        self.validation_box = tk.Text(frm, height=5, width=80, wrap='word',
                                       bg='#fffdf5', fg='#1b2a39', font=('Segoe UI', 10))
-        self.validation_box.pack(fill='both', expand=True)
+        self.validation_box.pack(fill='x', expand=True)
 
-        # Summary cards
-        summary_frame = tk.Frame(main, bg='#edf4fb')
-        summary_frame.pack(fill='x', pady=(0, 12))
+    def _build_summary_cards(self) -> None:
+        cards_frame = tk.Frame(self._inner, bg=_BG_MAIN)
+        cards_frame.pack(fill='x', pady=(0, 6))
         self.cards: dict[str, tk.Label] = {}
         for idx, (label, key) in enumerate([
             ('Registros encontrados', 'found'),
@@ -191,51 +279,34 @@ class ConversorODEApp(tk.Tk):
             ('Diferencia debe/haber', 'balance'),
             ('Estado final',          'status'),
         ]):
-            card = tk.Frame(summary_frame, bg='#ffffff',
-                            highlightbackground='#dfeaf5', highlightthickness=1, padx=12, pady=12)
-            card.grid(row=0, column=idx, padx=8, pady=4, sticky='nsew')
-            tk.Label(card, text=label, bg='#ffffff', fg='#56708a',
-                     font=('Segoe UI', 9, 'bold')).pack(anchor='w')
-            val = tk.Label(card, text='0', bg='#ffffff', fg='#102a4a',
-                           font=('Segoe UI', 18, 'bold'))
-            val.pack(anchor='w', pady=(8, 0))
+            card = tk.Frame(cards_frame, bg=_BG_WHITE,
+                            highlightbackground='#dfeaf5', highlightthickness=1,
+                            padx=10, pady=8)
+            card.grid(row=0, column=idx, padx=6, pady=2, sticky='nsew')
+            cards_frame.columnconfigure(idx, weight=1)
+            tk.Label(card, text=label, bg=_BG_WHITE, fg='#56708a',
+                     font=('Segoe UI', 8, 'bold')).pack(anchor='w')
+            val = tk.Label(card, text='0', bg=_BG_WHITE, fg='#102a4a',
+                           font=('Segoe UI', 16, 'bold'))
+            val.pack(anchor='w', pady=(4, 0))
             self.cards[key] = val
 
-        # Action buttons
-        actions = tk.Frame(main, bg='#edf4fb')
-        actions.pack(fill='x', pady=(8, 10))
-        self.progress = ttk.Progressbar(actions, orient='horizontal', mode='determinate', length=420)
-        self.progress.pack(side='left', padx=(0, 12))
-        self.status_label = tk.Label(actions, text='Listo', bg='#edf4fb', fg='#204a6d',
-                                     font=('Segoe UI', 10, 'bold'))
-        self.status_label.pack(side='left', padx=(4, 10))
-        for text, cmd, bg, fg in [
-            ('Analizar archivos',       self.analyze_files,     '#1d4d82', 'white'),
-            ('Generar carga',           self.generate_load,     '#2a9d8f', 'white'),
-            ('Abrir carpeta de salida', self.open_output_folder,'#3a6ea5', 'white'),
-            ('Restablecer',             self.reset_all,         '#cbcdd2', '#102a4a'),
-            ('Guardar configuración',   self.save_config_fields,'#e0b03d', '#102a4a'),
-        ]:
-            tk.Button(actions, text=text, command=cmd, bg=bg, fg=fg,
-                      font=('Segoe UI', 10, 'bold'), padx=16, pady=8, relief='flat'
-                      ).pack(side='left', padx=5)
-
-        self.output_dir.set(str(APP_DIR / 'salida'))
-        self.source_entry.focus_set()
+    # ------------------------------------------------------------------
+    # Bank row helper
+    # ------------------------------------------------------------------
 
     def _add_bank_row(self, bank_name: str, warn: bool = False) -> None:
-        """Create an editable bank row; highlight yellow when account is still generic."""
         if bank_name in self.bank_entries:
             return
-        bg = _WARN_BG if warn else '#ffffff'
+        bg = _WARN_BG if warn else _BG_WHITE
         fg = _WARN_FG if warn else '#0d2140'
         row = tk.Frame(self.bank_frame, bg=bg)
-        row.pack(fill='x', pady=3)
+        row.pack(fill='x', pady=2)
         tk.Label(row, text=bank_name, bg=bg, fg=fg,
                  font=('Segoe UI', 10, 'bold'), width=22, anchor='w').pack(side='left')
         account = tk.Entry(row, width=16, font=('Segoe UI', 10), relief='solid')
         account.pack(side='left', padx=(0, 10))
-        medio = tk.Entry(row, width=12, font=('Segoe UI', 10), relief='solid')
+        medio = tk.Entry(row, width=10, font=('Segoe UI', 10), relief='solid')
         medio.pack(side='left')
         self.bank_entries[bank_name] = {'cuenta': account, 'medio': medio}
         bank_cfg = self.config.get('bancos', {}).get(
@@ -379,6 +450,9 @@ class ConversorODEApp(tk.Tk):
         )
         self.validation_box.delete('1.0', tk.END)
         self.validation_box.insert('1.0', '\n'.join(lines))
+
+        # Scroll canvas back to top after refresh
+        self._canvas.yview_moveto(0.0)
 
     # ------------------------------------------------------------------
     # Generate
