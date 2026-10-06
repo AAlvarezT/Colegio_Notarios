@@ -609,3 +609,138 @@ def test_validation_report_is_xlsx(tmp_path):
     # Verify it is a valid xlsx (openpyxl can open it)
     wb = openpyxl.load_workbook(report_path)
     assert 'Resumen' in wb.sheetnames, 'Resumen sheet missing from validation report'
+
+
+# ---------------------------------------------------------------------------
+# 11. XLS cell-type compatibility with model (FACTURA 07-2026 SHIKINA.xls)
+# ---------------------------------------------------------------------------
+
+def test_xls_cell_types_match_model(tmp_path):
+    """Compare cell types of generated .xls against the original model file.
+
+    For each OUTPUT_COLUMN the test verifies that non-empty cells in both files
+    carry the same xlrd ctype.  A representative D-row and H-row are used.
+    Then specific mandatory assertions enforce ANO_MES / DOC_ANULADO are NUMBER,
+    key text fields are TEXT, dates are DATE, IMPORT_TOTAL is NUMBER, and the
+    sheet is named exactly 'Hoja1'.
+    """
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+        model_path=MODEL_PATH,
+    )
+
+    gen_wb  = xlrd.open_workbook(result['output_file'])
+    gen_ws  = gen_wb.sheet_by_index(0)
+    mod_wb  = xlrd.open_workbook(str(MODEL_PATH))
+    mod_ws  = mod_wb.sheet_by_index(0)
+
+    # Sheet name
+    assert gen_ws.name == 'Hoja1', f'sheet name must be Hoja1, got {gen_ws.name!r}'
+
+    # Header order must match model exactly
+    gen_headers = [gen_ws.cell_value(0, c) for c in range(gen_ws.ncols)]
+    mod_headers = [mod_ws.cell_value(0, c) for c in range(mod_ws.ncols)]
+    assert gen_headers == mod_headers, (
+        f'Header mismatch.\n  generated: {gen_headers}\n  model:     {mod_headers}'
+    )
+
+    # Locate a D-row and an H-row in the generated file
+    dh_col = gen_headers.index('DEBE HABER')
+    gen_d_row = gen_h_row = None
+    for r in range(1, gen_ws.nrows):
+        dh = str(gen_ws.cell_value(r, dh_col))
+        if gen_d_row is None and dh == 'D':
+            gen_d_row = r
+        if gen_h_row is None and dh == 'H':
+            gen_h_row = r
+        if gen_d_row is not None and gen_h_row is not None:
+            break
+
+    assert gen_d_row is not None, 'No D-row found in generated .xls'
+    assert gen_h_row is not None, 'No H-row found in generated .xls'
+
+    # Locate matching rows in model
+    mod_d_row = mod_h_row = None
+    for r in range(1, mod_ws.nrows):
+        dh = str(mod_ws.cell_value(r, dh_col))
+        if mod_d_row is None and dh == 'D':
+            mod_d_row = r
+        if mod_h_row is None and dh == 'H':
+            mod_h_row = r
+        if mod_d_row is not None and mod_h_row is not None:
+            break
+
+    assert mod_d_row is not None, 'No D-row in model .xls'
+    assert mod_h_row is not None, 'No H-row in model .xls'
+
+    # For each column: when BOTH files have a non-empty cell in the same row type,
+    # their ctypes must match.
+    EMPTY_CTYPES = {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}
+    for col_idx, col_name in enumerate(gen_headers):
+        for label, gen_row, mod_row in [('D', gen_d_row, mod_d_row),
+                                         ('H', gen_h_row, mod_h_row)]:
+            gen_cell = gen_ws.cell(gen_row, col_idx)
+            mod_cell = mod_ws.cell(mod_row, col_idx)
+            # Only compare when the model cell has actual content
+            if mod_cell.ctype in EMPTY_CTYPES:
+                continue
+            assert gen_cell.ctype == mod_cell.ctype, (
+                f'{label}-row col [{col_idx}] {col_name!r}: '
+                f'expected ctype={mod_cell.ctype}, got {gen_cell.ctype} '
+                f'(gen_val={gen_cell.value!r}, mod_val={mod_cell.value!r})'
+            )
+
+    # Mandatory type assertions (independent of model row lookup)
+    ano_col  = gen_headers.index('ANO_MES')
+    doc_col  = gen_headers.index('DOC_ANULADO')
+    cta_col  = gen_headers.index('CTA_CONTABLE')
+    sub_col  = gen_headers.index('SUB_DIARIO')
+    comp_col = gen_headers.index('COMPROBANTE')
+    cod_col  = gen_headers.index('COD_ANEXO')
+    ser_col  = gen_headers.index('SERIE_NUM')
+    imp_col  = gen_headers.index('IMPORT_TOTAL')
+    fec_col  = gen_headers.index('FEC_DOC')
+
+    # ANO_MES and DOC_ANULADO must be NUMBER in every data row
+    for r in range(1, gen_ws.nrows):
+        assert gen_ws.cell(r, ano_col).ctype == xlrd.XL_CELL_NUMBER, (
+            f'Row {r + 1}: ANO_MES ctype must be NUMBER, got {gen_ws.cell(r, ano_col).ctype}'
+        )
+        assert gen_ws.cell(r, doc_col).ctype == xlrd.XL_CELL_NUMBER, (
+            f'Row {r + 1}: DOC_ANULADO ctype must be NUMBER, got {gen_ws.cell(r, doc_col).ctype}'
+        )
+        assert gen_ws.cell(r, imp_col).ctype == xlrd.XL_CELL_NUMBER, (
+            f'Row {r + 1}: IMPORT_TOTAL ctype must be NUMBER, got {gen_ws.cell(r, imp_col).ctype}'
+        )
+
+    # Text columns must be TEXT when they have content
+    text_checks = [
+        (cta_col,  'CTA_CONTABLE'),
+        (sub_col,  'SUB_DIARIO'),
+        (comp_col, 'COMPROBANTE'),
+    ]
+    for col_idx, col_name in text_checks:
+        for r in range(1, gen_ws.nrows):
+            cell = gen_ws.cell(r, col_idx)
+            if cell.ctype not in EMPTY_CTYPES and cell.value != '':
+                assert cell.ctype == xlrd.XL_CELL_TEXT, (
+                    f'Row {r + 1}: {col_name} must be TEXT, got ctype={cell.ctype} val={cell.value!r}'
+                )
+
+    # COD_ANEXO and SERIE_NUM are TEXT on H-rows (which always have content)
+    for r in range(1, gen_ws.nrows):
+        dh = str(gen_ws.cell_value(r, dh_col))
+        if dh == 'H':
+            assert gen_ws.cell(r, cod_col).ctype == xlrd.XL_CELL_TEXT, (
+                f'Row {r + 1} (H): COD_ANEXO must be TEXT, got {gen_ws.cell(r, cod_col).ctype}'
+            )
+            assert gen_ws.cell(r, ser_col).ctype == xlrd.XL_CELL_TEXT, (
+                f'Row {r + 1} (H): SERIE_NUM must be TEXT, got {gen_ws.cell(r, ser_col).ctype}'
+            )
+
+    # FEC_DOC is DATE on every row
+    for r in range(1, gen_ws.nrows):
+        assert gen_ws.cell(r, fec_col).ctype == xlrd.XL_CELL_DATE, (
+            f'Row {r + 1}: FEC_DOC must be DATE, got {gen_ws.cell(r, fec_col).ctype}'
+        )

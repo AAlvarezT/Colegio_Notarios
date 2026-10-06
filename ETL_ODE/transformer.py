@@ -762,14 +762,17 @@ def export_carga_xls(output_df: pd.DataFrame, output_path: Path) -> None:
         'font: bold true, colour white; pattern: pattern solid, fore_colour dark_blue;'
     )
     date_style   = xlwt.easyxf(num_format_str='DD/MM/YYYY')
-    num_style    = xlwt.easyxf(num_format_str='0.00')
+    num_style    = xlwt.easyxf(num_format_str='0.00')   # IMPORT_TOTAL
+    int_style    = xlwt.easyxf(num_format_str='0')      # ANO_MES, DOC_ANULADO
     text_style   = xlwt.easyxf(num_format_str='@')
     plain_style  = xlwt.easyxf()
 
-    # 0-based column indices that need special treatment
-    _date_idxs = {4, 9, 13}    # FEC_DOC (E), FEC_VENC (J), FEC_REG (N)
-    _num_idx   = 11             # IMPORT_TOTAL (L)
-    _text_idxs = {0, 1, 2, 3, 6, 7, 8, 20, 21}  # A,B,C,D,G,H,I,U,V
+    # 0-based column indices mapped to the model (FACTURA 07-2026 SHIKINA.xls)
+    _date_idxs = {4, 9, 13}        # FEC_DOC (E), FEC_VENC (J), FEC_REG (N)  → DATE
+    _num_idxs  = {1, 11, 18}       # ANO_MES (B), IMPORT_TOTAL (L), DOC_ANULADO (S) → NUMBER
+    _int_idxs  = {1, 18}           # subset of _num_idxs: integer format
+    # Text cols that must preserve leading zeros (explicit '@' format):
+    _text_idxs = {0, 2, 3, 6, 7, 8, 20}  # CTA_CONTABLE,SUB_DIARIO,COMPROBANTE,COD_ANEXO,TIP_DOC,SERIE_NUM,MEDIO_PAGO
 
     # Header row
     for col_idx, col_name in enumerate(OUTPUT_COLUMNS):
@@ -808,11 +811,18 @@ def export_carga_xls(output_df: pd.DataFrame, output_path: Path) -> None:
                     except Exception:
                         ws.write(row_idx, col_idx, str(value), plain_style)
 
-            elif col_idx == _num_idx:
+            elif col_idx in _num_idxs:
                 try:
-                    ws.write(row_idx, col_idx, float(value), num_style)
+                    fval = float(value)
+                    if col_idx in _int_idxs:
+                        ws.write(row_idx, col_idx, int(fval), int_style)
+                    else:
+                        ws.write(row_idx, col_idx, fval, num_style)
                 except (ValueError, TypeError):
-                    ws.write(row_idx, col_idx, 0.0, num_style)
+                    if col_idx in _int_idxs:
+                        ws.write(row_idx, col_idx, 0, int_style)
+                    else:
+                        ws.write(row_idx, col_idx, 0.0, num_style)
 
             elif col_idx in _text_idxs:
                 ws.write(row_idx, col_idx, str(value) if value != '' else '', text_style)
