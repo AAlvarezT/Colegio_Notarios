@@ -742,6 +742,91 @@ def export_carga_workbook(output_df: pd.DataFrame, output_path: Path, file_label
         raise
 
 
+def export_carga_xls(output_df: pd.DataFrame, output_path: Path) -> None:
+    """Write carga as a real Excel 97-2003 (.xls) file using xlwt.
+
+    The file is the primary output consumed by the accounting macro
+    ("Pasar ventas y clientes a formato TXT"), which filters for *.xls.
+    The auxiliary _banco column is stripped; exactly OUTPUT_COLUMNS are written.
+    """
+    import xlwt  # noqa: PLC0415
+
+    export = output_df[OUTPUT_COLUMNS].copy() if '_banco' in output_df.columns else output_df.copy()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    wb = xlwt.Workbook(encoding='utf-8')
+    ws = wb.add_sheet('Hoja1')
+
+    # Styles
+    header_style = xlwt.easyxf(
+        'font: bold true, colour white; pattern: pattern solid, fore_colour dark_blue;'
+    )
+    date_style   = xlwt.easyxf(num_format_str='DD/MM/YYYY')
+    num_style    = xlwt.easyxf(num_format_str='0.00')
+    text_style   = xlwt.easyxf(num_format_str='@')
+    plain_style  = xlwt.easyxf()
+
+    # 0-based column indices that need special treatment
+    _date_idxs = {4, 9, 13}    # FEC_DOC (E), FEC_VENC (J), FEC_REG (N)
+    _num_idx   = 11             # IMPORT_TOTAL (L)
+    _text_idxs = {0, 1, 2, 3, 6, 7, 8, 20, 21}  # A,B,C,D,G,H,I,U,V
+
+    # Header row
+    for col_idx, col_name in enumerate(OUTPUT_COLUMNS):
+        ws.write(0, col_idx, col_name, header_style)
+
+    # Freeze first row
+    ws.set_panes_frozen(True)
+    ws.set_remove_splits(True)
+    ws.set_horz_split_pos(1)
+
+    # Data rows
+    for row_idx, (_, row) in enumerate(export.iterrows(), start=1):
+        for col_idx, col_name in enumerate(OUTPUT_COLUMNS):
+            value = row[col_name]
+
+            # Normalise empty / NaN
+            if value is None or (isinstance(value, float) and pd.isna(value)) \
+                    or str(value).lower() in ('nan', 'nat'):
+                ws.write(row_idx, col_idx, '', plain_style)
+                continue
+
+            if col_idx in _date_idxs:
+                if isinstance(value, pd.Timestamp):
+                    value = value.to_pydatetime()
+                if isinstance(value, datetime):
+                    ws.write(row_idx, col_idx, value, date_style)
+                elif value == '':
+                    ws.write(row_idx, col_idx, '', plain_style)
+                else:
+                    try:
+                        dt = pd.to_datetime(value, errors='coerce')
+                        if pd.notna(dt):
+                            ws.write(row_idx, col_idx, dt.to_pydatetime(), date_style)
+                        else:
+                            ws.write(row_idx, col_idx, str(value), plain_style)
+                    except Exception:
+                        ws.write(row_idx, col_idx, str(value), plain_style)
+
+            elif col_idx == _num_idx:
+                try:
+                    ws.write(row_idx, col_idx, float(value), num_style)
+                except (ValueError, TypeError):
+                    ws.write(row_idx, col_idx, 0.0, num_style)
+
+            elif col_idx in _text_idxs:
+                ws.write(row_idx, col_idx, str(value) if value != '' else '', text_style)
+
+            else:
+                ws.write(row_idx, col_idx, str(value) if value != '' else '', plain_style)
+
+    # Column widths (256 units = 1 character in xlwt)
+    for col_idx in range(len(OUTPUT_COLUMNS)):
+        ws.col(col_idx).width = 256 * 18
+
+    wb.save(str(output_path))
+
+
 def ensure_no_nan(output_df: pd.DataFrame) -> pd.DataFrame:
     cleaned = output_df.copy()
     for column in cleaned.columns:
@@ -825,15 +910,21 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
         'observaciones': [{'tipo': 'warning', 'mensaje': m} for m in warnings] + [{'tipo': 'info', 'mensaje': m} for m in info],
     }
 
-    out_file = output_dir / f'CARGA_COBRANZAS_ODE_{periodo}.xlsx'
-    report_file = output_dir / f'REPORTE_VALIDACION_ODE_{periodo}.xlsx'
-    if out_file.exists():
-        out_file = output_dir / f'CARGA_COBRANZAS_ODE_{periodo}_{datetime.now().strftime("%Y%m%d%H%M%S")}.xlsx'
+    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+    out_file_xls  = output_dir / f'CARGA_COBRANZAS_ODE_{periodo}.xls'
+    out_file_xlsx = output_dir / f'CARGA_COBRANZAS_ODE_{periodo}.xlsx'
+    report_file   = output_dir / f'REPORTE_VALIDACION_ODE_{periodo}.xlsx'
+    if out_file_xls.exists():
+        out_file_xls  = output_dir / f'CARGA_COBRANZAS_ODE_{periodo}_{timestamp}.xls'
+    if out_file_xlsx.exists():
+        out_file_xlsx = output_dir / f'CARGA_COBRANZAS_ODE_{periodo}_{timestamp}.xlsx'
     if report_file.exists():
-        report_file = output_dir / f'REPORTE_VALIDACION_ODE_{periodo}_{datetime.now().strftime("%Y%m%d%H%M%S")}.xlsx'
+        report_file   = output_dir / f'REPORTE_VALIDACION_ODE_{periodo}_{timestamp}.xlsx'
 
-    # Pass carga with _banco for conciliation; export strips it automatically
-    export_carga_workbook(carga, out_file, 'CARGA')
+    # Primary output: real Excel 97-2003 .xls (required by the macro filter)
+    export_carga_xls(carga, out_file_xls)
+    # Backup: .xlsx for review or additional tooling
+    export_carga_workbook(carga, out_file_xlsx, 'CARGA')
     create_validation_report(summary, source_path, report_file)
     result = {
         'summary': {
@@ -849,7 +940,8 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
             'resultado': 'CUADRADO' if diff <= 0.01 else 'REVISAR',
             'conciliacion': conciliacion,
         },
-        'output_file': str(out_file),
+        'output_file': str(out_file_xls),       # primary .xls — used by the macro
+        'output_file_xlsx': str(out_file_xlsx), # backup .xlsx — for review only
         'report_file': str(report_file),
         'processed_df': processed,
         'excluded_df': excluded,

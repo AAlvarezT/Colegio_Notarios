@@ -7,6 +7,7 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 import pytest
+import xlrd
 
 from transformer import (
     DEFAULT_CONFIG,
@@ -15,6 +16,7 @@ from transformer import (
     build_carga_dataframe,
     build_conciliacion,
     detect_total_row,
+    export_carga_xls,
     get_bank_default_config,
     load_config,
     load_ode_report,
@@ -128,9 +130,10 @@ def test_output_has_exactly_22_columns(tmp_path):
         fecha_calculo='fecha_cancelacion', periodo='202608',
         model_path=MODEL_PATH,
     )
-    wb = openpyxl.load_workbook(result['output_file'])
-    ws = wb.active
-    headers = [cell.value for cell in ws[1]]
+    # Primary output is .xls — verify via xlrd
+    wb = xlrd.open_workbook(result['output_file'])
+    ws = wb.sheet_by_index(0)
+    headers = [ws.cell_value(0, c) for c in range(ws.ncols)]
     assert headers == list(OUTPUT_COLUMNS), f'column mismatch: {headers}'
     assert '_banco' not in headers, '_banco aux column must not appear in exported file'
 
@@ -140,7 +143,8 @@ def test_output_date_and_number_formats(tmp_path):
         SOURCE_PATH, tmp_path, config={},
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
-    wb = openpyxl.load_workbook(result['output_file'])
+    # Backup .xlsx retains openpyxl number format metadata for review
+    wb = openpyxl.load_workbook(result['output_file_xlsx'])
     ws = wb.active
     # Check first data row (row 2); D-row FEC_DOC is col E, IMPORT_TOTAL is col L
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
@@ -177,7 +181,11 @@ def test_process_report_real_report_generates_valid_carga(tmp_path):
     carga = result['output_df']
     # 141 H rows + 4 D rows = 145
     assert len(carga) == 145, f'expected 145 output rows, got {len(carga)}'
+    # Primary output is .xls
     assert Path(result['output_file']).exists()
+    assert Path(result['output_file']).suffix == '.xls', 'primary output must be .xls'
+    # Backup .xlsx also generated
+    assert Path(result['output_file_xlsx']).exists()
     assert Path(result['report_file']).exists()
 
 
@@ -258,7 +266,7 @@ def test_otros_usa_cuenta_caja_y_medio_vacio():
 
 
 def test_otros_excel_medio_pago_realmente_vacio(tmp_path):
-    """MEDIO_PAGO must be genuinely empty (None or '') in the exported .xlsx for all OTROS rows."""
+    """MEDIO_PAGO must be genuinely empty in the exported .xls for all OTROS rows."""
     df = load_ode_report(SOURCE_PATH)
     carga = build_carga_dataframe(df, periodo='202608', config={})
 
@@ -279,31 +287,35 @@ def test_otros_excel_medio_pago_realmente_vacio(tmp_path):
         SOURCE_PATH, tmp_path, config={},
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
-    wb = openpyxl.load_workbook(result['output_file'])
-    ws = wb.active
+    # Verify in the primary .xls via xlrd
+    wb = xlrd.open_workbook(result['output_file'])
+    ws = wb.sheet_by_index(0)
+    headers = [ws.cell_value(0, c) for c in range(ws.ncols)]
+    medio_col = headers.index('MEDIO_PAGO')
+    cta_col   = headers.index('CTA_CONTABLE')
+    dh_col    = headers.index('DEBE HABER')
+    comp_col  = headers.index('COMPROBANTE')
 
-    headers = [cell.value for cell in ws[1]]
-    medio_col = headers.index('MEDIO_PAGO') + 1      # 1-based
-    cta_col   = headers.index('CTA_CONTABLE') + 1
-    dh_col    = headers.index('DEBE HABER') + 1
-    comp_col  = headers.index('COMPROBANTE') + 1
-
-    otros_xlsx_rows = 0
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-        cta  = row[cta_col  - 1].value
-        dh   = row[dh_col   - 1].value
-        comp = str(row[comp_col - 1].value) if row[comp_col - 1].value is not None else ''
+    otros_xls_rows = 0
+    for row_idx in range(1, ws.nrows):
+        cta  = str(ws.cell_value(row_idx, cta_col))
+        dh   = str(ws.cell_value(row_idx, dh_col))
+        comp_cell = ws.cell(row_idx, comp_col)
+        comp = str(comp_cell.value) if comp_cell.ctype != xlrd.XL_CELL_EMPTY else ''
+        # strip trailing '.0' that xlrd may add for numeric-formatted text
+        if comp.endswith('.0'):
+            comp = comp[:-2]
 
         is_otros_d = (cta == '10100001' and dh == 'D')
         is_otros_h = (comp == otros_comprobante and dh == 'H')
         if is_otros_d or is_otros_h:
-            otros_xlsx_rows += 1
-            medio_val = row[medio_col - 1].value
+            otros_xls_rows += 1
+            medio_val = ws.cell_value(row_idx, medio_col)
             assert medio_val in (None, ''), (
-                f'xlsx row {row[0].row}: MEDIO_PAGO should be empty, got {medio_val!r}'
+                f'xls row {row_idx + 1}: MEDIO_PAGO should be empty, got {medio_val!r}'
             )
 
-    assert otros_xlsx_rows > 0, 'No OTROS rows identified in the exported xlsx'
+    assert otros_xls_rows > 0, 'No OTROS rows identified in the exported .xls'
 
 
 def test_config_migracion_legacy_otros(tmp_path):
@@ -411,3 +423,189 @@ def test_gui_smoke_and_buttons():
     assert hasattr(app, '_canvas'), 'Canvas scroll area not created'
     assert hasattr(app, '_inner'), 'Inner scrollable frame not created'
     app.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 10. XLS output — mandatory checks for macro compatibility
+# ---------------------------------------------------------------------------
+
+def _xls_workbook_and_headers(result: dict):
+    """Helper: open the primary .xls and return (wb, ws, headers_list)."""
+    wb = xlrd.open_workbook(result['output_file'])
+    ws = wb.sheet_by_index(0)
+    headers = [ws.cell_value(0, c) for c in range(ws.ncols)]
+    return wb, ws, headers
+
+
+def test_xls_file_exists(tmp_path):
+    """1. Primary .xls file is present on disk."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    xls_path = Path(result['output_file'])
+    assert xls_path.exists(), f'.xls not found: {xls_path}'
+    assert xls_path.suffix == '.xls', f'expected .xls extension, got {xls_path.suffix!r}'
+
+
+def test_xls_readable_with_xlrd(tmp_path):
+    """2. xlrd can open the file without error (proves it is real BIFF8, not a renamed .xlsx)."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    wb = xlrd.open_workbook(result['output_file'])
+    assert wb.nsheets >= 1
+    ws = wb.sheet_by_index(0)
+    assert ws.nrows >= 2, 'xls must have header + at least one data row'
+
+
+def test_xls_has_exactly_22_columns(tmp_path):
+    """3. Exactly 22 columns matching OUTPUT_COLUMNS; no _banco."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, ws, headers = _xls_workbook_and_headers(result)
+    assert len(headers) == 22, f'expected 22 columns, got {len(headers)}: {headers}'
+    assert headers == list(OUTPUT_COLUMNS), f'column order/names mismatch: {headers}'
+    assert '_banco' not in headers, '_banco must not appear in exported .xls'
+
+
+def test_xls_has_145_data_rows(tmp_path):
+    """4. 145 data rows (header row excluded)."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, ws, _ = _xls_workbook_and_headers(result)
+    data_rows = ws.nrows - 1  # subtract header
+    assert data_rows == 145, f'expected 145 data rows, got {data_rows}'
+
+
+def test_xls_has_4d_141h_rows(tmp_path):
+    """5. Exactly 4 D-rows and 141 H-rows."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, ws, headers = _xls_workbook_and_headers(result)
+    dh_col = headers.index('DEBE HABER')
+    d_count = h_count = 0
+    for row_idx in range(1, ws.nrows):
+        val = str(ws.cell_value(row_idx, dh_col))
+        if val == 'D':
+            d_count += 1
+        elif val == 'H':
+            h_count += 1
+    assert d_count == 4,   f'expected 4 D-rows, got {d_count}'
+    assert h_count == 141, f'expected 141 H-rows, got {h_count}'
+
+
+def test_xls_totals_26757(tmp_path):
+    """6. Debe and Haber each sum to S/26,757.00; difference = S/0.00."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, ws, headers = _xls_workbook_and_headers(result)
+    dh_col     = headers.index('DEBE HABER')
+    import_col = headers.index('IMPORT_TOTAL')
+    total_d = total_h = 0.0
+    for row_idx in range(1, ws.nrows):
+        dh  = str(ws.cell_value(row_idx, dh_col))
+        amt = ws.cell_value(row_idx, import_col)
+        if isinstance(amt, (int, float)):
+            if dh == 'D':
+                total_d += amt
+            elif dh == 'H':
+                total_h += amt
+    assert abs(round(total_d, 2) - 26757.00) <= 0.01, f'D total: expected 26757.00, got {total_d:.2f}'
+    assert abs(round(total_h, 2) - 26757.00) <= 0.01, f'H total: expected 26757.00, got {total_h:.2f}'
+    assert abs(total_d - total_h) <= 0.01, f'difference must be 0, got {abs(total_d - total_h):.2f}'
+
+
+def test_xls_otros_uses_cuenta_10100001(tmp_path):
+    """7. All D-rows for OTROS use account 10100001."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, ws, headers = _xls_workbook_and_headers(result)
+    cta_col = headers.index('CTA_CONTABLE')
+    dh_col  = headers.index('DEBE HABER')
+
+    otros_d_rows = []
+    for row_idx in range(1, ws.nrows):
+        cta = str(ws.cell_value(row_idx, cta_col))
+        dh  = str(ws.cell_value(row_idx, dh_col))
+        if cta == '10100001' and dh == 'D':
+            otros_d_rows.append(row_idx)
+
+    assert len(otros_d_rows) > 0, 'No OTROS D-rows (account 10100001) found in .xls'
+    for row_idx in otros_d_rows:
+        cta = str(ws.cell_value(row_idx, cta_col))
+        assert cta == '10100001', f'row {row_idx + 1}: CTA_CONTABLE expected 10100001, got {cta!r}'
+
+
+def test_xls_otros_medio_pago_empty(tmp_path):
+    """8. MEDIO_PAGO is empty for all D and H rows belonging to OTROS."""
+    df = load_ode_report(SOURCE_PATH)
+    carga = build_carga_dataframe(df, periodo='202608', config={})
+    otros_d = carga[(carga['_banco'] == 'OTROS') & (carga['DEBE HABER'] == 'D')]
+    assert not otros_d.empty, 'No OTROS D-rows in DataFrame'
+    otros_comprobante = str(otros_d.iloc[0]['COMPROBANTE'])
+
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, ws, headers = _xls_workbook_and_headers(result)
+    cta_col   = headers.index('CTA_CONTABLE')
+    dh_col    = headers.index('DEBE HABER')
+    comp_col  = headers.index('COMPROBANTE')
+    medio_col = headers.index('MEDIO_PAGO')
+
+    checked = 0
+    for row_idx in range(1, ws.nrows):
+        cta  = str(ws.cell_value(row_idx, cta_col))
+        dh   = str(ws.cell_value(row_idx, dh_col))
+        comp_raw = ws.cell_value(row_idx, comp_col)
+        comp = str(comp_raw).rstrip('.0') if str(comp_raw).endswith('.0') else str(comp_raw)
+
+        is_otros_d = (cta == '10100001' and dh == 'D')
+        is_otros_h = (comp == otros_comprobante and dh == 'H')
+        if is_otros_d or is_otros_h:
+            checked += 1
+            medio_val = ws.cell_value(row_idx, medio_col)
+            assert medio_val in (None, ''), (
+                f'xls row {row_idx + 1}: MEDIO_PAGO must be empty for OTROS, got {medio_val!r}'
+            )
+
+    assert checked > 0, 'No OTROS rows found in .xls to verify MEDIO_PAGO'
+
+
+def test_xls_no_banco_column(tmp_path):
+    """9. The string _banco must not appear anywhere in the .xls headers."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    _, _, headers = _xls_workbook_and_headers(result)
+    assert '_banco' not in headers, f'_banco aux column must not be exported; headers: {headers}'
+    assert all('_banco' not in str(h) for h in headers), \
+        f'Unexpected _banco variant in headers: {headers}'
+
+
+def test_validation_report_is_xlsx(tmp_path):
+    """10. REPORTE_VALIDACION always generates as .xlsx regardless of .xls change."""
+    result = process_report(
+        SOURCE_PATH, tmp_path, config={},
+        fecha_calculo='fecha_cancelacion', periodo='202608',
+    )
+    report_path = Path(result['report_file'])
+    assert report_path.exists(), f'Validation report not found: {report_path}'
+    assert report_path.suffix == '.xlsx', f'expected .xlsx report, got {report_path.suffix!r}'
+    # Verify it is a valid xlsx (openpyxl can open it)
+    wb = openpyxl.load_workbook(report_path)
+    assert 'Resumen' in wb.sheetnames, 'Resumen sheet missing from validation report'

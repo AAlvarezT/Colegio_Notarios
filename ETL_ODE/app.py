@@ -516,7 +516,12 @@ class ConversorODEApp(tk.Tk):
         self.validation_box.insert('1.0', '\n'.join(lines))
         messagebox.showinfo(
             'Carga generada',
-            f'Archivo generado:\n{result["output_file"]}\n\nReporte:\n{result["report_file"]}')
+            f'Archivo de carga (.xls):\n{result["output_file"]}\n\n'
+            f'Pasos en la macro del estudio:\n'
+            f'1. Usar "Pasar ventas y clientes a formato TXT"\n'
+            f'   y seleccionar el archivo .xls anterior.\n'
+            f'2. Cargar el TXT generado en el módulo contable.\n\n'
+            f'Reporte de validación (solo revisión):\n{result["report_file"]}')
 
     # ------------------------------------------------------------------
     # Misc

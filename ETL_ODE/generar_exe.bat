@@ -14,7 +14,7 @@ if not exist ".venv_build\Scripts\python.exe" (
 )
 
 echo Instalando dependencias necesarias...
-".venv_build\Scripts\python.exe" -m pip install --disable-pip-version-check pandas==2.2.3 openpyxl==3.1.5 xlrd==2.0.1 pyinstaller==6.21.0
+".venv_build\Scripts\python.exe" -m pip install --disable-pip-version-check pandas==2.2.3 openpyxl==3.1.5 xlrd==2.0.1 xlwt==1.3.0 pyinstaller==6.21.0
 if errorlevel 1 goto error
 
 echo Limpiando compilaciones anteriores...

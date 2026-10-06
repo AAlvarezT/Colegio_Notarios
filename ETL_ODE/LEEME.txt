@@ -1,4 +1,4 @@
-Conversor de cobranzas ODE
+﻿Conversor de cobranzas ODE
 
 1. Descomprime completamente el archivo ZIP del proyecto.
 2. Abre la carpeta ETL_ODE.
@@ -12,14 +12,24 @@ Conversor de cobranzas ODE
 10. Verifica que la diferencia sea S/ 0.00 y que el estado final sea "CUADRADO".
 11. Abre la carpeta de salida para revisar los archivos generados.
 
+Uso en la macro contable del estudio:
+1. Abre la aplicacion contable y usa "Pasar ventas y clientes a formato TXT".
+2. En el selector de archivo (filtro "Archivos XLS"), selecciona CARGA_COBRANZAS_ODE_YYYYMM.xls.
+3. La herramienta generara un archivo TXT.
+4. Carga ese TXT en el modulo contable correspondiente.
+
+IMPORTANTE: No cargues directamente el reporte de validacion (REPORTE_VALIDACION_ODE_YYYYMM.xlsx).
+Ese archivo es solo para revisar el proceso internamente.
+
 Consideraciones importantes:
-- Las series 0001 se excluyen automáticamente.
-- Interbank, BBVA y Banco de la Nación se procesan por separado.
+- Las series 0001 se excluyen automaticamente.
+- Interbank, BBVA y Banco de la Nacion se procesan por separado.
 - "OTROS" se registra como cobro en efectivo/Caja en la cuenta 10100001, sin medio de pago.
 - Los archivos resultantes se guardan en la carpeta salida.
-- No cierres el programa mientras esté procesando.
+- No cierres el programa mientras este procesando.
 - El archivo original no se modifica.
 
 La salida incluye:
-- CARGA_COBRANZAS_ODE_YYYYMM.xlsx
-- REPORTE_VALIDACION_ODE_YYYYMM.xlsx
+- CARGA_COBRANZAS_ODE_YYYYMM.xls   (archivo principal para la macro, formato Excel 97-2003 real)
+- CARGA_COBRANZAS_ODE_YYYYMM.xlsx  (copia de respaldo, solo para revision)
+- REPORTE_VALIDACION_ODE_YYYYMM.xlsx (resumen del proceso, solo para revision)
