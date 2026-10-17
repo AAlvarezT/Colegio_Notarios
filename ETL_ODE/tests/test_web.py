@@ -351,3 +351,113 @@ def test_config_validate_invalid():
         cookies=cookies,
     )
     assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Logging / filesystem regression tests (Vercel read-only FS fix)
+# ---------------------------------------------------------------------------
+
+import logging as _logging
+from pathlib import Path as _Path
+
+
+def test_transformer_no_file_handler_at_import():
+    """Importing transformer must NOT configure a FileHandler.
+
+    Regression for: OSError: [Errno 30] Read-only file system: '/var/task/logs'
+    The module-level logging block was creating log_dir and a FileHandler on
+    import, which fails on Vercel's read-only filesystem.
+    """
+    logger = _logging.getLogger('conversor_ode')
+    file_handlers = [h for h in logger.handlers if isinstance(h, _logging.FileHandler)]
+    assert not file_handlers, (
+        "transformer.py must not add FileHandler at import time. "
+        "Call configure_file_logging() from the desktop entry point instead."
+    )
+
+
+def test_configure_file_logging_desktop(tmp_path):
+    """configure_file_logging() installs a FileHandler pointing to tmp_path."""
+    from transformer import configure_file_logging, LOGGER as ode_logger
+
+    # server.py adds a StreamHandler on import; save and clear so we get a
+    # clean slate that mimics a fresh desktop process.
+    saved_handlers = list(ode_logger.handlers)
+    ode_logger.handlers.clear()
+    try:
+        configure_file_logging(tmp_path)
+        file_handlers = [h for h in ode_logger.handlers if isinstance(h, _logging.FileHandler)]
+        assert file_handlers, "configure_file_logging must add at least one FileHandler"
+        assert all(str(tmp_path) in h.baseFilename for h in file_handlers), (
+            "FileHandler must point to the provided log_dir, not the source tree"
+        )
+        # Idempotent: calling again does not add a second handler
+        count_before = len(ode_logger.handlers)
+        configure_file_logging(tmp_path)
+        assert len(ode_logger.handlers) == count_before
+    finally:
+        for h in ode_logger.handlers[:]:
+            h.close()
+        ode_logger.handlers.clear()
+        ode_logger.handlers.extend(saved_handlers)
+
+
+def test_server_import_survives_readonly_filesystem(tmp_path):
+    """Simulate Vercel's read-only FS: importing server must not call mkdir.
+
+    Runs in a subprocess to get a fresh module environment.
+    """
+    import subprocess
+    import sys
+
+    script = """
+import sys, os
+sys.path.insert(0, ".")
+os.environ.setdefault('SECRET_KEY',   'test-key')
+os.environ.setdefault('ODE_USERNAME', 'u')
+os.environ.setdefault('ODE_PASSWORD', 'p')
+# Clear VERCEL_ENV so IS_VERCEL is False (avoids 503 on missing vars)
+os.environ.pop('VERCEL_ENV', None)
+
+from pathlib import Path
+from unittest.mock import patch
+
+failed_mkdirs = []
+original_mkdir = Path.mkdir
+
+def guarded_mkdir(self, *args, **kwargs):
+    path_str = str(self)
+    # Allow only truly temporary paths (OS temp dirs)
+    import tempfile
+    if path_str.startswith(tempfile.gettempdir()):
+        return original_mkdir(self, *args, **kwargs)
+    failed_mkdirs.append(path_str)
+    raise OSError(30, 'Read-only file system', path_str)
+
+with patch.object(Path, 'mkdir', guarded_mkdir):
+    try:
+        import transformer  # noqa: F401
+        import server       # noqa: F401
+        print('IMPORTS_OK')
+        print('FAILED_MKDIRS:', failed_mkdirs)
+    except OSError as exc:
+        print(f'OSERROR: {exc}')
+        print(f'FAILED_MKDIRS: {failed_mkdirs}')
+        sys.exit(1)
+"""
+
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True,
+        text=True,
+        cwd=str(_Path(__file__).parent.parent),
+    )
+    assert result.returncode == 0, (
+        f"Server import raised OSError (simulated read-only FS):\n"
+        f"stdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+    assert 'IMPORTS_OK' in result.stdout, (
+        f"Expected IMPORTS_OK in stdout:\n{result.stdout}\n{result.stderr}"
+    )
+

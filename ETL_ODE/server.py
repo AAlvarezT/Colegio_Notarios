@@ -60,10 +60,17 @@ MAX_FILE_BYTES = 8 * 1024 * 1024    # 8 MB per uploaded file
 app = FastAPI(title='Conversor ODE')
 
 static_dir = HERE / 'static'
-static_dir.mkdir(exist_ok=True)
+# static/ is part of the repository and included in the Vercel bundle at build
+# time.  Do NOT call mkdir() here — the filesystem is read-only on Vercel.
 app.mount('/static', StaticFiles(directory=str(static_dir)), name='static')
 
+# Web logging: stream to stderr only (no disk writes).
 _log = logging.getLogger('conversor_ode')
+if not _log.handlers:
+    _log.setLevel(logging.INFO)
+    _sh = logging.StreamHandler()
+    _sh.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
+    _log.addHandler(_sh)
 
 # ---------------------------------------------------------------------------
 # Auth helpers

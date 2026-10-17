@@ -56,13 +56,24 @@ def get_app_dir() -> Path:
 
 
 LOGGER = logging.getLogger('conversor_ode')
-if not LOGGER.handlers:
-    log_dir = get_app_dir() / 'logs'
-    log_dir.mkdir(parents=True, exist_ok=True)
+# No handlers are configured here.  Importing transformer never writes to disk.
+# - Desktop (app.py):  call configure_file_logging() at startup.
+# - Web   (server.py): uses a StreamHandler to stderr, configured there.
+
+
+def configure_file_logging(log_dir: 'Path | str') -> None:
+    """Configure a rotating FileHandler for the desktop application.
+
+    Called once from app.py at startup.  Never called from the web server.
+    Idempotent: a second call is a no-op if handlers are already installed.
+    """
+    if LOGGER.handlers:
+        return
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
     LOGGER.setLevel(logging.INFO)
-    handler = logging.FileHandler(log_dir / 'conversor_ode.log', encoding='utf-8')
-    formatter = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s')
-    handler.setFormatter(formatter)
+    handler = logging.FileHandler(log_path / 'conversor_ode.log', encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
     LOGGER.addHandler(handler)
 
 

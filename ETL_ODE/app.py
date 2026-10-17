@@ -11,6 +11,7 @@ import pandas as pd
 
 from transformer import (
     DEFAULT_CONFIG,
+    configure_file_logging,
     get_app_dir,
     get_bank_default_config,
     load_config,
@@ -25,6 +26,9 @@ from transformer import (
 )
 
 APP_DIR = get_app_dir()
+# Configure file logging once for the desktop process.
+# The web server (server.py) configures its own StreamHandler independently.
+configure_file_logging(APP_DIR / 'logs')
 
 _WARN_BG = '#fffbe6'
 _WARN_FG = '#b35c00'
