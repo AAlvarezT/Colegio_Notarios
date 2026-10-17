@@ -15,8 +15,10 @@ from transformer import (
     get_bank_default_config,
     load_config,
     normalize_bank_name,
+    normalize_tip_doc_code,
     process_report,
     read_raw_ode_report,
+    resolve_tip_doc_for_df,
     save_config,
     split_ode_rows,
     validate_report,
@@ -58,9 +60,12 @@ class ConversorODEApp(tk.Tk):
         self.config = load_config(APP_DIR / 'config.json')
         self.analysis_df = pd.DataFrame()
         self.last_result: dict = {}
+        self.serie_map_widgets: dict[str, ttk.Combobox] = {}
+        self._analysis_valid = False
 
         self._build_ui()
         self._apply_config_to_fields()
+        self._bind_invalidation_traces()
 
     # ------------------------------------------------------------------
     # Layout skeleton: fixed header ─ scrollable middle ─ fixed footer
@@ -81,6 +86,7 @@ class ConversorODEApp(tk.Tk):
         self._build_config_section()
         self._build_banks_section()
         self._build_preview_section()
+        self._build_doc_type_section()
         self._build_validation_section()
         self._build_summary_cards()
 
@@ -222,7 +228,7 @@ class ConversorODEApp(tk.Tk):
             ('Cuenta clientes', 'cuenta_clientes'),
             ('Sub diario',      'sub_diario'),
             ('Tipo anexo',      'tipo_anexo'),
-            ('Tipo documento',  'tipo_documento'),
+            ('Tipo doc (respaldo global)', 'tipo_documento'),
             ('Moneda',          'moneda'),
             ('Tipo conversión', 'tipo_conversion'),
             ('Doc. anulado',    'doc_anulado'),
@@ -248,18 +254,71 @@ class ConversorODEApp(tk.Tk):
         frm.pack(fill='x', pady=(0, 10))
         self.preview = ttk.Treeview(
             frm,
-            columns=('banco', 'serie', 'documento', 'importe', 'fecha'),
-            show='headings', height=6)  # reduced height
+            columns=('banco', 'serie', 'documento', 'importe', 'fecha', 'tip_doc'),
+            show='headings', height=6)
         for col, w, anc in [
             ('banco', 150, 'w'), ('serie', 80, 'w'), ('documento', 100, 'w'),
-            ('importe', 100, 'e'), ('fecha', 110, 'w'),
+            ('importe', 100, 'e'), ('fecha', 110, 'w'), ('tip_doc', 70, 'center'),
         ]:
-            self.preview.heading(col, text=col.capitalize())
+            self.preview.heading(col, text=col.replace('_', ' ').capitalize())
             self.preview.column(col, width=w, anchor=anc)
         sv = ttk.Scrollbar(frm, orient='vertical', command=self.preview.yview)
         self.preview.configure(yscrollcommand=sv.set)
         self.preview.pack(side='left', fill='x', expand=True)
         sv.pack(side='right', fill='y')
+
+    def _build_doc_type_section(self) -> None:
+        """Section that shows TIP_DOC counts and a series-mapping editor."""
+        frm = self._section('Tipos de comprobante detectados')
+        frm.pack(fill='x', pady=(0, 10))
+
+        # Summary label
+        self._type_summary_var = tk.StringVar(value='Analice un archivo para ver el desglose por tipo.')
+        tk.Label(frm, textvariable=self._type_summary_var, bg=_BG_WHITE, fg='#1a2c3f',
+                 font=('Segoe UI', 10, 'bold'), anchor='w').pack(fill='x', pady=(0, 6))
+
+        # Treeview showing series → resolved type
+        tree_frame = tk.Frame(frm, bg=_BG_WHITE)
+        tree_frame.pack(fill='x')
+        self._series_tree = ttk.Treeview(
+            tree_frame,
+            columns=('serie', 'tipo'),
+            show='headings', height=5,
+            selectmode='none')
+        self._series_tree.heading('serie', text='Serie')
+        self._series_tree.heading('tipo',  text='Tipo resuelto')
+        self._series_tree.column('serie', width=120, anchor='w')
+        self._series_tree.column('tipo',  width=160, anchor='center')
+        sv2 = ttk.Scrollbar(tree_frame, orient='vertical', command=self._series_tree.yview)
+        self._series_tree.configure(yscrollcommand=sv2.set)
+        self._series_tree.pack(side='left', fill='x', expand=True)
+        sv2.pack(side='right', fill='y')
+
+        # Series mapping editor (shown when there are unresolved series)
+        self._map_editor_frame = tk.Frame(frm, bg=_BG_WHITE)
+        self._map_editor_frame.pack(fill='x', pady=(8, 0))
+
+        self._map_note = tk.Label(
+            self._map_editor_frame,
+            text='',
+            bg=_WARN_BG, fg=_WARN_FG,
+            font=('Segoe UI', 9, 'bold'), anchor='w', wraplength=600, justify='left')
+        self._map_note.pack(fill='x', pady=(0, 4))
+
+        self._map_rows_frame = tk.Frame(self._map_editor_frame, bg=_BG_WHITE)
+        self._map_rows_frame.pack(fill='x')
+
+        btn_row = tk.Frame(self._map_editor_frame, bg=_BG_WHITE)
+        btn_row.pack(fill='x', pady=(6, 0))
+        self._apply_map_btn = tk.Button(
+            btn_row, text='Guardar mapeo y re-analizar',
+            command=self._apply_serie_map,
+            bg='#c05a00', fg='white', font=('Segoe UI', 10, 'bold'),
+            padx=10, pady=5, relief='flat')
+        self._apply_map_btn.pack(side='left')
+        self._map_note.pack_forget()
+        self._map_rows_frame.pack_forget()
+        self._apply_map_btn.pack_forget()
 
     def _build_validation_section(self) -> None:
         frm = self._section('Validaciones y advertencias')
@@ -329,6 +388,31 @@ class ConversorODEApp(tk.Tk):
             fields['medio'].delete(0, tk.END)
             fields['medio'].insert(0, '' if bank_cfg.get('medio_pago') is None else str(bank_cfg.get('medio_pago', '')))
 
+    def _bind_invalidation_traces(self) -> None:
+        """Invalidate stale analysis when file, period, or date criterion changes."""
+        for var in (self.file_label, self.year_var, self.month_var, self.date_selector):
+            var.trace_add('write', self._invalidate_analysis)
+
+    def _invalidate_analysis(self, *_: object) -> None:
+        """Clear analysis state so the user must re-analyse after changing inputs."""
+        if not self._analysis_valid:
+            return
+        self._analysis_valid = False
+        self.analysis_df = pd.DataFrame()
+        self.last_result = {}
+        self.preview.delete(*self.preview.get_children())
+        self.validation_box.delete('1.0', tk.END)
+        self._type_summary_var.set('Analice un archivo para ver el desglose por tipo.')
+        self._series_tree.delete(*self._series_tree.get_children())
+        self._map_note.pack_forget()
+        self._map_rows_frame.pack_forget()
+        self._apply_map_btn.pack_forget()
+        self.serie_map_widgets.clear()
+        for card in self.cards.values():
+            card.config(text='0')
+        self.cards['status'].config(text='LISTO')
+        self.status_label.config(text='LISTO')
+
     def _collect_config(self) -> dict:
         cfg = self.config.copy()
         for key, entry in self.config_entries.items():
@@ -340,6 +424,15 @@ class ConversorODEApp(tk.Tk):
                 'cuenta_contable': fields['cuenta'].get().strip() or defaults['cuenta_contable'],
                 'medio_pago': fields['medio'].get().strip(),
             }
+        # Collect live serie_map from the mapping editor widgets
+        live_map: dict[str, str] = {}
+        for serie, combo in self.serie_map_widgets.items():
+            val = combo.get().split()[0]  # '01' or '03' from '01 (Factura)' etc.
+            code = normalize_tip_doc_code(val)
+            if code:
+                live_map[serie] = code
+        if live_map:
+            cfg['serie_map'] = {**cfg.get('serie_map', {}), **live_map}
         return cfg
 
     def save_config_fields(self) -> None:
@@ -381,17 +474,19 @@ class ConversorODEApp(tk.Tk):
             return
         periodo = f"{int(self.year_var.get()):04d}{self.month_var.get()}"
         fecha_calculo = self.date_selector.get()
+        cfg = self._collect_config()
         self.progress['value'] = 10
         self.status_label.config(text='Analizando reporte...')
         threading.Thread(
             target=self._analyze_worker,
-            args=(source_path, periodo, fecha_calculo),
+            args=(source_path, periodo, fecha_calculo, cfg),
             daemon=True).start()
 
-    def _analyze_worker(self, source_path: str, periodo: str, fecha_calculo: str) -> None:
+    def _analyze_worker(self, source_path: str, periodo: str, fecha_calculo: str, cfg: dict) -> None:
         try:
             raw, excluded, processed = analyze_source(source_path)
-            errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo)
+            errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo, config=cfg)
+            tip_docs, tip_doc_obs = resolve_tip_doc_for_df(processed, cfg)
 
             new_banks: list[str] = []
             if 'banco' in processed.columns:
@@ -404,9 +499,10 @@ class ConversorODEApp(tk.Tk):
             self.last_result = {
                 'raw': raw, 'processed': processed, 'excluded': excluded,
                 'errors': errors, 'warnings': warnings, 'info': info,
+                'tip_docs': tip_docs, 'tip_doc_obs': tip_doc_obs,
             }
             self.after(0, lambda: self._refresh_analysis(
-                raw, excluded, processed, errors, warnings, info, new_banks))
+                raw, excluded, processed, errors, warnings, info, new_banks, tip_docs, tip_doc_obs))
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror('Error', str(exc)))
             self.after(0, lambda: self.status_label.config(text='ERROR AL ANALIZAR'))
@@ -415,8 +511,11 @@ class ConversorODEApp(tk.Tk):
 
     def _refresh_analysis(self, raw: pd.DataFrame, excluded: pd.DataFrame,
                           processed: pd.DataFrame, errors: list,
-                          warnings: list, info: list, new_banks: list) -> None:
+                          warnings: list, info: list, new_banks: list,
+                          tip_docs: 'pd.Series | None' = None,
+                          tip_doc_obs: 'list | None' = None) -> None:
         state_after_analysis = 'LISTO PARA GENERAR' if not errors else 'REVISAR'
+        self._analysis_valid = True
         self.status_label.config(text=state_after_analysis)
 
         for bank_name in new_banks:
@@ -433,12 +532,27 @@ class ConversorODEApp(tk.Tk):
 
         if 'banco' in processed.columns and 'importe_cancelado' in processed.columns:
             pv = processed[['banco', 'serie', 'documento', 'importe_cancelado', 'fecha_cancelacion']].head(100).copy()
-            pv.columns = ['banco', 'serie', 'documento', 'importe', 'fecha']
+            td_vals = (tip_docs.head(100).values if tip_docs is not None else [''] * min(100, len(processed)))
+            pv['tip_doc'] = td_vals
+            pv.columns = ['banco', 'serie', 'documento', 'importe', 'fecha', 'tip_doc']
             pv['importe'] = pv['importe'].apply(lambda x: f'{float(x):,.2f}' if pd.notna(x) else '0.00')
             self.preview.delete(*self.preview.get_children())
             for _, row in pv.iterrows():
                 self.preview.insert('', 'end', values=(
-                    row['banco'], row['serie'], row['documento'], row['importe'], str(row['fecha'])))
+                    row['banco'], row['serie'], row['documento'], row['importe'],
+                    str(row['fecha']), row['tip_doc'] or '?'))
+
+        # --- Doc-type section ---
+        if tip_docs is not None:
+            n_01  = int((tip_docs == '01').sum())
+            n_03  = int((tip_docs == '03').sum())
+            n_unk = int((tip_docs == '').sum())
+            self._type_summary_var.set(
+                f'Facturas (01): {n_01}   │   Boletas (03): {n_03}   │   Sin resolver: {n_unk}')
+            self._populate_series_tree(processed, tip_docs)
+            self._populate_serie_map_editor(processed, tip_docs)
+        else:
+            self._type_summary_var.set('Tipo no analizado.')
 
         total = float(processed['importe_cancelado'].sum()) if 'importe_cancelado' in processed.columns else 0.0
         self.cards['found'].config(text=str(len(raw)))
@@ -458,6 +572,103 @@ class ConversorODEApp(tk.Tk):
 
         # Scroll canvas back to top after refresh
         self._canvas.yview_moveto(0.0)
+
+    def _populate_series_tree(self, processed: 'pd.DataFrame', tip_docs: 'pd.Series') -> None:
+        """Fill the series → resolved-type Treeview."""
+        self._series_tree.delete(*self._series_tree.get_children())
+        if 'serie' not in processed.columns:
+            return
+        seen: dict[str, set] = {}
+        for serie, td in zip(processed['serie'].astype(str), tip_docs):
+            seen.setdefault(serie, set()).add(td or '?')
+        for serie in sorted(seen):
+            types = seen[serie]
+            label = '/'.join(sorted(types))
+            if '?' in types:
+                tag = 'unresolved'
+            elif len(types) > 1:
+                tag = 'conflict'
+            else:
+                tag = 'ok'
+            self._series_tree.insert('', 'end', values=(serie, label), tags=(tag,))
+        self._series_tree.tag_configure('ok',         foreground='#1a6b2a')
+        self._series_tree.tag_configure('unresolved', foreground='#b35c00')
+        self._series_tree.tag_configure('conflict',   foreground='#aa0000')
+
+    def _populate_serie_map_editor(self, processed: 'pd.DataFrame', tip_docs: 'pd.Series') -> None:
+        """Show comboboxes for series that could not be resolved."""
+        # Clear previous widgets
+        for w in self._map_rows_frame.winfo_children():
+            w.destroy()
+        self.serie_map_widgets.clear()
+
+        if 'serie' not in processed.columns:
+            self._map_note.pack_forget()
+            self._map_rows_frame.pack_forget()
+            self._apply_map_btn.pack_forget()
+            return
+
+        unresolved = sorted({
+            str(s) for s, td in zip(processed['serie'].astype(str), tip_docs) if not td
+        })
+        if not unresolved:
+            self._map_note.pack_forget()
+            self._map_rows_frame.pack_forget()
+            self._apply_map_btn.pack_forget()
+            return
+
+        self._map_note.config(
+            text=f'⚠  {len(unresolved)} serie(s) sin tipo resuelto. '
+                 'Asigne el tipo y pulse "Guardar mapeo y re-analizar".')
+        self._map_note.pack(fill='x', pady=(0, 4))
+
+        # Header
+        hdr = tk.Frame(self._map_rows_frame, bg=_BG_WHITE)
+        hdr.pack(fill='x')
+        tk.Label(hdr, text='Serie', bg=_BG_WHITE, fg='#0d2140',
+                 font=('Segoe UI', 9, 'bold'), width=18, anchor='w').pack(side='left')
+        tk.Label(hdr, text='Tipo de comprobante', bg=_BG_WHITE, fg='#0d2140',
+                 font=('Segoe UI', 9, 'bold'), width=22, anchor='w').pack(side='left')
+
+        for serie in unresolved:
+            r = tk.Frame(self._map_rows_frame, bg=_BG_WHITE)
+            r.pack(fill='x', pady=1)
+            tk.Label(r, text=serie, bg=_BG_WHITE, fg='#0d2140',
+                     font=('Segoe UI', 10), width=18, anchor='w').pack(side='left')
+            combo = ttk.Combobox(
+                r,
+                values=['01 (Factura)', '03 (Boleta)'],
+                width=20, state='readonly')
+            combo.pack(side='left')
+            self.serie_map_widgets[serie] = combo
+
+        self._map_rows_frame.pack(fill='x')
+        self._apply_map_btn.pack(side='left')
+
+    def _apply_serie_map(self) -> None:
+        """Save the editor's mapping into config and re-analyse."""
+        new_map: dict[str, str] = {}
+        for serie, combo in self.serie_map_widgets.items():
+            val = combo.get()
+            if not val:
+                messagebox.showwarning(
+                    'Mapeo incompleto',
+                    f'Asigne un tipo a la serie {serie!r} antes de aplicar.')
+                return
+            code = val.split()[0]
+            from transformer import normalize_tip_doc_code as _ntc
+            normalized = _ntc(code)
+            if normalized:
+                new_map[serie] = normalized
+
+        # Merge into config
+        cfg = self._collect_config()
+        cfg['serie_map'] = {**cfg.get('serie_map', {}), **new_map}
+        self.config = cfg
+        save_config(APP_DIR / 'config.json', cfg)
+        # Re-analyse with the updated mapping
+        self._analysis_valid = False  # allow re-analysis
+        self.analyze_files()
 
     # ------------------------------------------------------------------
     # Generate
@@ -546,6 +757,13 @@ class ConversorODEApp(tk.Tk):
         self.preview.delete(*self.preview.get_children())
         self.progress['value'] = 0
         self.status_label.config(text='LISTO')
+        self._analysis_valid = False
+        self._type_summary_var.set('Analice un archivo para ver el desglose por tipo.')
+        self._series_tree.delete(*self._series_tree.get_children())
+        self._map_note.pack_forget()
+        self._map_rows_frame.pack_forget()
+        self._apply_map_btn.pack_forget()
+        self.serie_map_widgets.clear()
         self.config = load_config(APP_DIR / 'config.json')
         self._apply_config_to_fields()
 
