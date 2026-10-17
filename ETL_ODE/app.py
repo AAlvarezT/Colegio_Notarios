@@ -395,11 +395,16 @@ class ConversorODEApp(tk.Tk):
             var.trace_add('write', self._invalidate_analysis)
 
     def _invalidate_analysis(self, *_: object) -> None:
-        """Clear analysis state so the user must re-analyse after changing inputs."""
+        """Mark analysis stale and increment version.
+
+        The version is incremented unconditionally so any worker already running
+        with an older version discards its result when it finishes.  UI cleanup
+        only runs when there was previously a valid result to clear.
+        """
+        self._analysis_version += 1   # always — even during an active analysis
         if not self._analysis_valid:
-            return
+            return                    # UI is already cleared; nothing else to do
         self._analysis_valid = False
-        self._analysis_version += 1
         self.analysis_df = pd.DataFrame()
         self.last_result = {}
         self.preview.delete(*self.preview.get_children())

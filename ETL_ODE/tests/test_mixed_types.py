@@ -221,11 +221,17 @@ class TestResolveTipDoc:
         td, msg = resolve_tip_doc({'serie': 'FE01', 'tipo_comprobante': '03'}, cfg)
         assert td is None and 'Conflicto' in msg
 
-    # 3j. Invalid code in map → block
-    def test_invalid_code_in_map_blocks(self):
+    # 3j. Invalid code in map — caught by validate_serie_map (not per-row)
+    def test_invalid_code_blocks_validate_serie_map(self):
+        """Invalid code '99' is caught at map-validation time, not per-row."""
+        err = validate_serie_map({'FE': '99'})
+        assert err is not None and '99' in err
+
+    def test_invalid_code_in_map_resolve_tip_doc_returns_none(self):
+        """resolve_tip_doc silently skips invalid codes; resolution fails as 'no match'."""
         cfg = {**DEFAULT_CONFIG, 'serie_map': {'FE': '99'}}
         td, msg = resolve_tip_doc({'serie': 'FE01'}, cfg)
-        assert td is None and '99' in msg
+        assert td is None and msg is not None
 
 
 # ---------------------------------------------------------------------------
@@ -561,3 +567,68 @@ def test_collect_config_empty_combo_no_crash():
         'Empty combo must not auto-assign ZZ99 to serie_map'
     )
     app.destroy()
+
+
+# ---------------------------------------------------------------------------
+# 15. Regression: validate_serie_map blocks invalid codes in any order
+# ---------------------------------------------------------------------------
+
+class TestValidateSerieMapInvalidCode:
+    """{"F":"99","FE01":"03"} and the reversed dict both block for invalid code '99'."""
+
+    def test_invalid_code_first_entry_blocked(self):
+        msg = validate_serie_map({'F': '99', 'FE01': '03'})
+        assert msg is not None and '99' in msg
+
+    def test_invalid_code_second_entry_blocked(self):
+        """Both orders must raise — the valid entry must not mask the invalid one."""
+        msg = validate_serie_map({'FE01': '03', 'F': '99'})
+        assert msg is not None and '99' in msg
+
+    def test_valid_map_passes(self):
+        assert validate_serie_map({'F': '01', 'FE01': '03'}) is None
+
+    def test_invalid_code_blocks_build(self):
+        df = _make_df(serie=['FE01', 'FE02'])
+        cfg = {**DEFAULT_CONFIG, 'serie_map': {'F': '99', 'FE01': '03'}}
+        with pytest.raises(ValueError, match='serie_map'):
+            build_carga_dataframe(df, periodo='202608', config=cfg)
+
+    def test_invalid_code_blocks_resolve_for_df(self):
+        df = _make_df(serie=['FE01', 'FE02'])
+        cfg = {**DEFAULT_CONFIG, 'serie_map': {'F': '99', 'FE01': '03'}}
+        series, obs = resolve_tip_doc_for_df(df, cfg)
+        assert all(s == '' for s in series)
+        assert all(o['tipo'] == 'ERROR_MAPA' for o in obs)
+
+
+# ---------------------------------------------------------------------------
+# 16. Regression: _invalidate_analysis increments version even while analyzing
+# ---------------------------------------------------------------------------
+
+def test_invalidate_increments_version_when_not_valid():
+    """Bug: _invalidate_analysis returned early if _analysis_valid is False.
+
+    After the fix the version must be incremented regardless, so a stale
+    worker result cannot be applied after an input change during analysis.
+    """
+    pytest.importorskip('tkinter')
+    from app import ConversorODEApp
+    try:
+        app = ConversorODEApp()
+    except Exception as exc:
+        pytest.skip(f'Tk unavailable: {exc}')
+
+    # Simulate: analysis running (_analysis_valid=False) but version=1
+    app._analysis_valid = False
+    app._analysis_version = 1
+
+    # A change in inputs (file, period, etc.) fires _invalidate_analysis
+    app._invalidate_analysis()
+
+    # Version must be incremented even though _analysis_valid was False
+    assert app._analysis_version == 2, (
+        '_invalidate_analysis must increment version even during an active analysis'
+    )
+    app.destroy()
+

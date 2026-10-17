@@ -101,3 +101,82 @@ El ejecutable se genera en `dist`.
 - El log técnico queda en `logs/conversor_ode.log`.
 - Los espacios en blanco observados en la herramienta del estudio no han sido reproducidos con archivos sintéticos; pendiente de validar con un reporte real de Sharon que incluya boletas.
 
+---
+
+## Uso web
+
+La interfaz web permite usar el conversor desde cualquier navegador sin instalar Python.
+
+### Inicio local
+
+```bash
+# Configura las variables de entorno (copia .env.example a .env y edita)
+$env:SECRET_KEY="clave-secreta-aleatoria"
+$env:ODE_USERNAME="sharon"
+$env:ODE_PASSWORD="tu-clave"
+
+# Inicia el servidor
+uvicorn server:app --reload --port 8000
+```
+
+Luego abre `http://localhost:8000` en el navegador.
+
+> **Sin credenciales configuradas** (desarrollo local): el servidor permite acceso directo sin login para facilitar pruebas. No usar en producción.
+
+### Variables de entorno
+
+Ver `.env.example` para referencia:
+
+| Variable | Descripción |
+|----------|-------------|
+| `SECRET_KEY` | Clave para firmar las cookies de sesión. Debe ser aleatoria y secreta. |
+| `ODE_USERNAME` | Nombre de usuario para acceder a la interfaz. |
+| `ODE_PASSWORD` | Contraseña de acceso. |
+
+### Flujo de uso para Sharon
+
+1. Abre `http://localhost:8000` (o la URL de Vercel).
+2. Ingresa las credenciales configuradas.
+3. **Sección "Archivos y periodo"**: selecciona el reporte `.xlsx` de ODE, el año y mes del periodo.
+4. **(Opcional)** En "Configuración" ajusta cuentas contables, bancos y serie_map. Puedes exportar/importar la config como JSON.
+5. Haz clic en **"Analizar archivos"**: revisa errores, advertencias y la vista previa de TIP_DOC.
+6. Si hay series sin resolver: selecciona **01 (Factura)** o **03 (Boleta)** para cada una y haz clic en **"Aplicar mapeo y re-analizar"**.
+7. Una vez que el estado muestre **"LISTO PARA GENERAR"**, haz clic en **"Generar carga"**.
+8. Descarga los archivos:
+   - 🟢 **CARGA_ODE_YYYYMM.xls** — este es el archivo para la macro del estudio.
+   - **CARGA_ODE_YYYYMM.xlsx** — copia de respaldo.
+   - **REPORTE_ODE_YYYYMM.xlsx** — solo revisión interna, no cargarlo en la macro.
+
+### Exportar / importar configuración
+
+- **Exportar**: haz clic en "Exportar config" para descargar la configuración actual como JSON.
+- **Importar**: haz clic en "Importar config", selecciona el JSON. El servidor lo valida antes de aplicarlo.
+
+### Configuración en Vercel
+
+1. Crea un nuevo proyecto en Vercel apuntando al repositorio.
+2. En **Root Directory**, configura: `ETL_ODE`.
+3. El entrypoint se auto-detecta desde `server.py` (variable `app`), o configúralo en `pyproject.toml`: `[tool.vercel] entrypoint = "server:app"`.
+4. En **Environment Variables**, define `SECRET_KEY`, `ODE_USERNAME` y `ODE_PASSWORD`.
+
+### Límites
+
+- Archivos de entrada: hasta **8 MB** por archivo.
+- Respuesta de generación: hasta ~40 MB (conservador para Vercel).
+- No hay almacenamiento persistente — cada request es independiente.
+
+### Pruebas
+
+```bash
+# Sólo tests web
+python -m pytest tests/test_web.py -v
+
+# Suite completa
+python -m pytest tests/ -q
+```
+
+**Resultados con datos sintéticos** (sin archivo real): 20/20 tests web pasan.  
+**Suite completa**: 138 passed, 1 skipped.
+
+**Pendiente de validar con archivo real de Sharon**: comportamiento con reportes que mezclen facturas y boletas reales, incluyendo formatos de fecha y RUC no estándar.
+

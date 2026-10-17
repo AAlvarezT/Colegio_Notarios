@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv*/
+dist/
+build/
+*.spec
+*.log
+logs/
+salida/
+tests/
+requirements-dev.txt
+*.bat
+*.exe
+*.zip

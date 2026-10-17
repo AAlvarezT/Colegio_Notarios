@@ -170,10 +170,14 @@ def normalize_tip_doc_code(value: Any) -> Optional[str]:
 
 
 def validate_serie_map(serie_map: Dict[str, str]) -> Optional[str]:
-    """Validate serie_map for empty prefixes and contradictory normalised keys.
+    """Validate serie_map for empty prefixes, invalid codes, and contradictory keys.
 
     Returns an error message if the map is structurally invalid, else None.
+    ALL keys and codes are checked before reporting the first error found.
     Must be called once per batch (not per row) before using the map.
+
+    Invalid codes block the entire map regardless of which key they belong to,
+    so {"F":"99","FE01":"03"} (in either order) returns an error for code '99'.
     """
     if not serie_map:
         return None
@@ -185,17 +189,21 @@ def validate_serie_map(serie_map: Dict[str, str]) -> Optional[str]:
                 "La clave vacía no está permitida en 'serie_map'. "
                 "Elimine o corrija la entrada vacía."
             )
+        # Validate the code regardless of whether this key will be used
+        norm_code = normalize_tip_doc_code(code)
+        if norm_code is None:
+            return (
+                f"El código {code!r} para la clave {key!r} no es un tipo de comprobante válido. "
+                "Use '01' (Factura) o '03' (Boleta)."
+            )
         if k in seen:
             prev_key, prev_code = seen[k]
-            this_type = normalize_tip_doc_code(code)
-            prev_type = normalize_tip_doc_code(prev_code)
-            if this_type != prev_type:
-                _inv = 'inválido'
+            prev_norm = normalize_tip_doc_code(prev_code)
+            if norm_code != prev_norm:
                 return (
                     f"Claves contradictorias en serie_map: {key!r} y {prev_key!r} "
                     f"se normalizan a '{k}' pero asignan tipos distintos "
-                    f"({code!r} → {this_type or _inv} "
-                    f"vs {prev_code!r} → {prev_type or _inv}). "
+                    f"({code!r} → {norm_code} vs {prev_code!r} → {prev_norm}). "
                     "Corrija o elimine una de las dos entradas."
                 )
         seen[k] = (key, code)
@@ -207,12 +215,14 @@ def _match_serie_map(
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Return (mapped_code, matched_key, error_msg) using deterministic rules.
 
+    Assumes the map has already been validated with ``validate_serie_map``.
+    All codes are therefore valid; no per-entry error checking is needed here.
+
     Resolution order (independent of dict insertion order):
     1. Exact normalised match (stripped, uppercased).
     2. Longest prefix match among all keys that are a prefix of the serie.
 
     Returns (None, None, None) when the serie has no match in the map.
-    Returns (None, key, error_msg) when the matched entry has an invalid code.
     """
     s = serie.strip().upper()
     exact_code: Optional[str] = None
@@ -225,23 +235,15 @@ def _match_serie_map(
         k = str(key).strip().upper()
         if not k:
             continue
+        normalized = normalize_tip_doc_code(code)
+        if normalized is None:
+            # Shouldn't happen after validate_serie_map — skip defensively
+            continue
         if s == k:
-            normalized = normalize_tip_doc_code(code)
-            if normalized is None:
-                return None, key, (
-                    f"El mapeo define el código {code!r} para la clave {key!r}, "
-                    "que no es un tipo de comprobante válido (use '01' o '03')."
-                )
             exact_code = normalized
             exact_key = key
             break  # exact match is definitive
         if s.startswith(k) and len(k) > best_len:
-            normalized = normalize_tip_doc_code(code)
-            if normalized is None:
-                return None, key, (
-                    f"El mapeo define el código {code!r} para el prefijo {key!r}, "
-                    "que no es un tipo de comprobante válido (use '01' o '03')."
-                )
             best_code = normalized
             best_key = key
             best_len = len(k)

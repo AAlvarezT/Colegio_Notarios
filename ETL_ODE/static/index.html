@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conversor ODE</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue: #2563eb; --blue-dark: #1d4ed8; --blue-light: #eff6ff;
+      --green: #16a34a; --green-light: #f0fdf4;
+      --orange: #ea580c; --orange-light: #fff7ed;
+      --red: #dc2626; --red-light: #fef2f2;
+      --gray: #6b7280; --gray-light: #f9fafb; --gray-border: #e5e7eb;
+      --text: #111827; --text-muted: #6b7280;
+      --radius: 8px; --shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f4f8; color: var(--text); min-height: 100vh; }
+    header { background: #1a3a5c; color: #fff; padding: 0.9rem 1.5rem; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 1.1rem; font-weight: 700; }
+    header span { font-size: 0.8rem; opacity: 0.75; margin-left: 0.75rem; }
+    #btn-logout { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: #fff; border-radius: 6px; padding: 0.4rem 0.85rem; cursor: pointer; font-size: 0.85rem; transition: background 0.15s; }
+    #btn-logout:hover { background: rgba(255,255,255,0.25); }
+    .container { max-width: 960px; margin: 1.5rem auto; padding: 0 1rem; }
+    .card { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 1.25rem; }
+    .card-header { padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--gray-border); display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; }
+    .card-header h2 { font-size: 0.95rem; font-weight: 600; color: #1a3a5c; }
+    .card-body { padding: 1.25rem; }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .col { flex: 1; min-width: 180px; }
+    label { display: block; font-size: 0.82rem; font-weight: 600; color: #374151; margin-bottom: 0.3rem; }
+    input[type=text], input[type=number], select, textarea {
+      width: 100%; padding: 0.55rem 0.75rem; border: 1.5px solid var(--gray-border);
+      border-radius: 6px; font-size: 0.92rem; outline: none; transition: border-color 0.15s; background: #fff;
+    }
+    input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,0.10); }
+    input[type=file] { padding: 0.4rem 0; font-size: 0.88rem; border: none; background: none; }
+    .file-wrapper { border: 1.5px dashed var(--gray-border); border-radius: 6px; padding: 0.6rem 0.75rem; background: var(--gray-light); }
+    .file-wrapper:hover { border-color: var(--blue); }
+    .btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.6rem 1.2rem; border-radius: 6px; font-size: 0.92rem; font-weight: 600; cursor: pointer; border: none; transition: background 0.15s, opacity 0.15s; }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--blue-dark); }
+    .btn-success { background: var(--green); color: #fff; }
+    .btn-success:hover:not(:disabled) { background: #15803d; }
+    .btn-outline { background: #fff; color: var(--blue); border: 1.5px solid var(--blue); }
+    .btn-outline:hover:not(:disabled) { background: var(--blue-light); }
+    .btn-sm { padding: 0.4rem 0.85rem; font-size: 0.82rem; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; align-items: center; }
+    .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700; }
+    .badge-green { background: var(--green-light); color: var(--green); border: 1px solid #86efac; }
+    .badge-orange { background: var(--orange-light); color: var(--orange); border: 1px solid #fdba74; }
+    .badge-red { background: var(--red-light); color: var(--red); border: 1px solid #fca5a5; }
+    .badge-gray { background: #f3f4f6; color: var(--gray); border: 1px solid #d1d5db; }
+    .badge-blue { background: var(--blue-light); color: var(--blue); border: 1px solid #93c5fd; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .msg-list { list-style: none; }
+    .msg-list li { padding: 0.35rem 0.65rem; border-radius: 5px; font-size: 0.85rem; margin-bottom: 0.3rem; }
+    .msg-error { background: #fef2f2; color: #b91c1c; border-left: 3px solid #ef4444; }
+    .msg-warn { background: #fffbeb; color: #92400e; border-left: 3px solid #f59e0b; }
+    .msg-info { background: #eff6ff; color: #1e40af; border-left: 3px solid #60a5fa; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { background: #f1f5f9; font-weight: 600; text-align: left; padding: 0.5rem 0.65rem; border-bottom: 2px solid var(--gray-border); }
+    td { padding: 0.45rem 0.65rem; border-bottom: 1px solid #f1f5f9; }
+    tr:last-child td { border-bottom: none; }
+    .tip-01 { color: var(--green); font-weight: 700; }
+    .tip-03 { color: var(--blue); font-weight: 700; }
+    .tip-unresolved { color: var(--orange); font-weight: 700; }
+    .toggle-arrow { font-size: 0.8rem; color: var(--gray); transition: transform 0.2s; }
+    .collapsed .toggle-arrow { transform: rotate(-90deg); }
+    .collapsible-body { transition: max-height 0.25s ease, opacity 0.2s; overflow: hidden; }
+    .collapsible-body.hidden { max-height: 0 !important; opacity: 0; padding: 0; }
+    .summary-line { font-size: 0.9rem; margin-bottom: 0.4rem; }
+    .summary-line strong { font-size: 1rem; }
+    .serie-editor { margin-top: 0.75rem; }
+    .serie-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .serie-label { font-weight: 600; font-size: 0.88rem; min-width: 90px; }
+    .serie-select { max-width: 220px; }
+    #section-downloads { display: none; }
+    .dl-card { display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.85rem 1rem; border-radius: 7px; border: 1.5px solid var(--gray-border); margin-bottom: 0.6rem; }
+    .dl-card.primary-dl { border-color: var(--green); background: var(--green-light); }
+    .dl-icon { font-size: 1.5rem; line-height: 1; }
+    .dl-info { flex: 1; }
+    .dl-info strong { display: block; font-size: 0.9rem; margin-bottom: 0.15rem; }
+    .dl-info small { font-size: 0.78rem; color: var(--gray); }
+    .concil-table { font-size: 0.82rem; }
+    .concil-total { font-weight: 700; background: #f8fafc; }
+    .stale-notice { background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.83rem; color: #78350f; margin-top: 0.6rem; }
+    #status-bar { padding: 0.6rem 1.25rem; border-top: 1px solid var(--gray-border); font-size: 0.82rem; color: var(--gray); display: flex; align-items: center; gap: 0.5rem; }
+    .sep { margin: 0.75rem 0; border: none; border-top: 1px solid var(--gray-border); }
+    @media(max-width: 600px) { .row { flex-direction: column; } header h1 { font-size: 0.95rem; } }
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Conversor de cobranzas ODE</h1>
+    <span>Notaría Sofía Ode</span>
+  </div>
+  <button id="btn-logout">Cerrar sesión</button>
+</header>
+
+<div class="container">
+
+  <!-- FILES SECTION -->
+  <div class="card">
+    <div class="card-header"><h2>📂 Archivos y periodo</h2></div>
+    <div class="card-body">
+      <div class="row">
+        <div class="col" style="flex:2; min-width:260px;">
+          <label>Reporte de cancelados ODE (.xlsx / .xls) <span style="color:var(--red)">*</span></label>
+          <div class="file-wrapper"><input type="file" id="file-reporte" accept=".xlsx,.xls"></div>
+          <div id="file-name" style="font-size:0.78rem; color:var(--gray); margin-top:0.25rem;"></div>
+        </div>
+        <div class="col" style="min-width:220px;">
+          <label>Archivo modelo (opcional)</label>
+          <div class="file-wrapper"><input type="file" id="file-modelo" accept=".xlsx,.xls"></div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:1rem;">
+        <div class="col">
+          <label>Año</label>
+          <input type="number" id="inp-year" value="2026" min="2020" max="2100" step="1">
+        </div>
+        <div class="col">
+          <label>Mes</label>
+          <select id="inp-month">
+            <option value="1">Enero</option><option value="2">Febrero</option>
+            <option value="3">Marzo</option><option value="4">Abril</option>
+            <option value="5">Mayo</option><option value="6">Junio</option>
+            <option value="7">Julio</option><option value="8">Agosto</option>
+            <option value="9">Setiembre</option><option value="10">Octubre</option>
+            <option value="11">Noviembre</option><option value="12">Diciembre</option>
+          </select>
+        </div>
+        <div class="col">
+          <label>Criterio de fecha</label>
+          <select id="inp-fecha-calculo">
+            <option value="fecha_cancelacion">Fecha cancelación</option>
+            <option value="fecha_emi">Fecha emisión</option>
+            <option value="ultimo_dia_mes">Último día del mes</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONFIG SECTION (collapsible) -->
+  <div class="card" id="card-config">
+    <div class="card-header" id="cfg-toggle">
+      <h2>⚙️ Configuración</h2>
+      <span class="toggle-arrow">▼</span>
+    </div>
+    <div class="card-body collapsible-body hidden" id="cfg-body">
+      <div class="row">
+        <div class="col">
+          <label>Cuenta clientes</label>
+          <input type="text" id="cfg-cuenta-clientes" value="12120001">
+        </div>
+        <div class="col">
+          <label>Sub-diario</label>
+          <input type="text" id="cfg-sub-diario" value="01">
+        </div>
+        <div class="col">
+          <label>Tipo de anexo</label>
+          <input type="text" id="cfg-tipo-anexo" value="02">
+        </div>
+      </div>
+      <div class="row" style="margin-top:0.75rem;">
+        <div class="col">
+          <label>Moneda</label>
+          <input type="text" id="cfg-moneda" value="MN">
+        </div>
+        <div class="col">
+          <label>Tipo conversión</label>
+          <input type="text" id="cfg-tipo-conversion" value="VTA">
+        </div>
+        <div class="col">
+          <label>Doc. anulado</label>
+          <input type="text" id="cfg-doc-anulado" value="0">
+        </div>
+      </div>
+      <div class="row" style="margin-top:0.75rem;">
+        <div class="col" style="flex:2;">
+          <label>Glosa</label>
+          <input type="text" id="cfg-glosa" value="COBRANZA DEL MES">
+        </div>
+        <div class="col" style="flex:2;">
+          <label>Tipo documento <small style="font-weight:400; color:var(--gray)">(respaldo histórico, no se usa para clasificar)</small></label>
+          <input type="text" value="01" readonly style="background:#f3f4f6; color:var(--gray); cursor:default;">
+        </div>
+      </div>
+      <hr class="sep">
+      <h3 style="font-size:0.88rem; font-weight:700; color:#1a3a5c; margin-bottom:0.75rem;">Bancos</h3>
+      <div id="banks-grid">
+        <!-- Generated by JS -->
+      </div>
+      <hr class="sep">
+      <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+        <button class="btn btn-outline btn-sm" id="btn-export-config">⬇ Exportar config</button>
+        <label class="btn btn-outline btn-sm" style="cursor:pointer;">⬆ Importar config<input type="file" id="inp-import-config" accept=".json" style="display:none;"></label>
+      </div>
+    </div>
+  </div>
+
+  <!-- ANALYZE BUTTON -->
+  <div class="actions">
+    <button class="btn btn-primary" id="btn-analyze" disabled>
+      Analizar archivos
+    </button>
+    <span id="analyze-status" style="font-size:0.85rem; color:var(--gray);"></span>
+  </div>
+
+  <!-- RESULTS SECTION -->
+  <div id="section-results" style="display:none; margin-top:1.25rem;">
+    <div class="card">
+      <div class="card-header" style="cursor:default;">
+        <h2>📊 Resultados del análisis</h2>
+        <div id="result-badge"></div>
+      </div>
+      <div class="card-body">
+        <div id="stale-notice" class="stale-notice" style="display:none;">
+          ⚠️ Estos resultados están desactualizados. Cambiaste alguna entrada — vuelve a analizar.
+        </div>
+        <div id="errors-block" style="display:none;">
+          <p style="font-size:0.82rem; font-weight:700; color:var(--red); margin-bottom:0.4rem;">Errores bloqueantes:</p>
+          <ul class="msg-list" id="errors-list"></ul>
+        </div>
+        <div id="warnings-block" style="display:none; margin-top:0.5rem;">
+          <ul class="msg-list" id="warnings-list"></ul>
+        </div>
+        <div id="info-block" style="display:none; margin-top:0.5rem;">
+          <ul class="msg-list" id="info-list"></ul>
+        </div>
+
+        <div id="type-summary-block" style="display:none; margin-top:0.75rem; padding:0.75rem; border-radius:7px; background:#f8fafc; border:1px solid var(--gray-border);">
+          <p id="type-summary-text" style="font-size:0.9rem;"></p>
+        </div>
+
+        <div id="stats-block" style="display:none; margin-top:0.6rem; font-size:0.82rem; color:var(--gray);"></div>
+
+        <!-- Preview table -->
+        <div id="preview-block" style="display:none; margin-top:1rem;">
+          <p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Vista previa (primeros 200 registros):</p>
+          <div style="overflow-x:auto;">
+            <table id="preview-table">
+              <thead><tr>
+                <th>Banco</th><th>Serie</th><th>Documento</th>
+                <th>Importe</th><th>Fecha</th><th>TIP_DOC</th>
+              </tr></thead>
+              <tbody id="preview-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Series editor -->
+        <div id="series-editor" style="display:none; margin-top:1rem;">
+          <p style="font-size:0.88rem; font-weight:700; color:var(--orange); margin-bottom:0.5rem;">Series sin resolver — selecciona el tipo:</p>
+          <div id="series-selects" class="serie-editor"></div>
+          <div class="actions" style="margin-top:0.6rem;">
+            <button class="btn btn-outline" id="btn-remap" disabled>Aplicar mapeo y re-analizar</button>
+            <span style="font-size:0.78rem; color:var(--gray);">Selecciona un tipo para cada serie antes de continuar.</span>
+          </div>
+        </div>
+
+        <!-- Conciliation -->
+        <div id="concil-block" style="display:none; margin-top:1.25rem;">
+          <p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliación por banco:</p>
+          <div style="overflow-x:auto;">
+            <table class="concil-table" id="concil-table">
+              <thead><tr>
+                <th>Banco</th><th>Comprobante</th><th>Cantidad</th>
+                <th>Débito</th><th>Crédito</th><th>Diferencia</th><th>Estado</th>
+              </tr></thead>
+              <tbody id="concil-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GENERATE BUTTON -->
+    <div class="actions">
+      <button class="btn btn-success" id="btn-generate" disabled>
+        Generar carga
+      </button>
+      <span id="generate-status" style="font-size:0.85rem; color:var(--gray);"></span>
+    </div>
+  </div>
+
+  <!-- DOWNLOADS SECTION -->
+  <div id="section-downloads" style="margin-top:1.25rem;">
+    <div class="card">
+      <div class="card-header" style="cursor:default;"><h2>💾 Archivos generados</h2></div>
+      <div class="card-body" id="downloads-body"></div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let reporteFile = null;
+let modeloFile = null;
+let analysisValid = false;
+let analysisData = null;
+let serieMap = {};
+let defaultConfig = null;
+
+const BANKS = ['INTERBANK', 'BBVA CONTINENTAL', 'DE LA NACION', 'OTROS'];
+const DEFAULT_BANK_CFG = {
+  'INTERBANK':         { cuenta_contable: '10100011', medio_pago: '008' },
+  'BBVA CONTINENTAL':  { cuenta_contable: '10100011', medio_pago: '008' },
+  'DE LA NACION':      { cuenta_contable: '10100011', medio_pago: '008' },
+  'OTROS':             { cuenta_contable: '10100001', medio_pago: '' },
+};
+
+// ============================================================
+// Init
+// ============================================================
+document.addEventListener('DOMContentLoaded', async () => {
+  buildBanksGrid();
+  setCurrentMonth();
+  await loadDefaultConfig();
+  setupListeners();
+});
+
+function setCurrentMonth() {
+  const now = new Date();
+  document.getElementById('inp-year').value = now.getFullYear();
+  document.getElementById('inp-month').value = now.getMonth() + 1;
+}
+
+async function loadDefaultConfig() {
+  try {
+    const res = await fetch('/api/config/default');
+    if (res.ok) defaultConfig = await res.json();
+  } catch {}
+}
+
+function buildBanksGrid() {
+  const grid = document.getElementById('banks-grid');
+  grid.innerHTML = '';
+  BANKS.forEach(bank => {
+    const def = DEFAULT_BANK_CFG[bank];
+    grid.innerHTML += `
+      <div style="margin-bottom:0.75rem;">
+        <p style="font-size:0.82rem; font-weight:700; color:#374151; margin-bottom:0.35rem;">${bank}</p>
+        <div class="row" style="gap:0.5rem;">
+          <div class="col">
+            <label>Cuenta contable</label>
+            <input type="text" id="bank-cuenta-${bank.replace(/ /g,'_')}" value="${def.cuenta_contable}">
+          </div>
+          <div class="col">
+            <label>Medio de pago</label>
+            <input type="text" id="bank-medio-${bank.replace(/ /g,'_')}" value="${def.medio_pago}">
+          </div>
+        </div>
+      </div>`;
+  });
+}
+
+// ============================================================
+// Config helpers
+// ============================================================
+function readConfig() {
+  const bancos = {};
+  BANKS.forEach(bank => {
+    const key = bank.replace(/ /g,'_');
+    bancos[bank] = {
+      cuenta_contable: document.getElementById(`bank-cuenta-${key}`).value.trim(),
+      medio_pago: document.getElementById(`bank-medio-${key}`).value.trim(),
+    };
+  });
+  return {
+    cuenta_clientes: document.getElementById('cfg-cuenta-clientes').value.trim(),
+    sub_diario: document.getElementById('cfg-sub-diario').value.trim(),
+    tipo_anexo: document.getElementById('cfg-tipo-anexo').value.trim(),
+    moneda: document.getElementById('cfg-moneda').value.trim(),
+    tipo_conversion: document.getElementById('cfg-tipo-conversion').value.trim(),
+    doc_anulado: document.getElementById('cfg-doc-anulado').value.trim(),
+    glosa: document.getElementById('cfg-glosa').value.trim(),
+    serie_map: serieMap,
+    bancos,
+  };
+}
+
+function applyConfig(cfg) {
+  if (!cfg) return;
+  if (cfg.cuenta_clientes) document.getElementById('cfg-cuenta-clientes').value = cfg.cuenta_clientes;
+  if (cfg.sub_diario) document.getElementById('cfg-sub-diario').value = cfg.sub_diario;
+  if (cfg.tipo_anexo) document.getElementById('cfg-tipo-anexo').value = cfg.tipo_anexo;
+  if (cfg.moneda) document.getElementById('cfg-moneda').value = cfg.moneda;
+  if (cfg.tipo_conversion) document.getElementById('cfg-tipo-conversion').value = cfg.tipo_conversion;
+  if (cfg.doc_anulado !== undefined) document.getElementById('cfg-doc-anulado').value = cfg.doc_anulado;
+  if (cfg.glosa) document.getElementById('cfg-glosa').value = cfg.glosa;
+  if (cfg.serie_map && typeof cfg.serie_map === 'object') serieMap = cfg.serie_map;
+  if (cfg.bancos && typeof cfg.bancos === 'object') {
+    BANKS.forEach(bank => {
+      const key = bank.replace(/ /g,'_');
+      const bc = cfg.bancos[bank];
+      if (bc) {
+        if (bc.cuenta_contable !== undefined) document.getElementById(`bank-cuenta-${key}`).value = bc.cuenta_contable;
+        if (bc.medio_pago !== undefined) document.getElementById(`bank-medio-${key}`).value = bc.medio_pago;
+      }
+    });
+  }
+}
+
+// ============================================================
+// Invalidation
+// ============================================================
+function invalidateAnalysis() {
+  if (!analysisValid) return;
+  analysisValid = false;
+  document.getElementById('btn-generate').disabled = true;
+  const notice = document.getElementById('stale-notice');
+  if (notice) notice.style.display = 'block';
+}
+
+// ============================================================
+// Listeners
+// ============================================================
+function setupListeners() {
+  // File inputs
+  document.getElementById('file-reporte').addEventListener('change', e => {
+    reporteFile = e.target.files[0] || null;
+    document.getElementById('file-name').textContent = reporteFile ? reporteFile.name : '';
+    document.getElementById('btn-analyze').disabled = !reporteFile;
+    invalidateAnalysis();
+  });
+  document.getElementById('file-modelo').addEventListener('change', e => {
+    modeloFile = e.target.files[0] || null;
+    invalidateAnalysis();
+  });
+
+  // Period / date criterion
+  ['inp-year','inp-month','inp-fecha-calculo'].forEach(id => {
+    document.getElementById(id).addEventListener('change', invalidateAnalysis);
+  });
+
+  // Config fields
+  ['cfg-cuenta-clientes','cfg-sub-diario','cfg-tipo-anexo','cfg-moneda',
+   'cfg-tipo-conversion','cfg-doc-anulado','cfg-glosa'].forEach(id => {
+    document.getElementById(id).addEventListener('input', invalidateAnalysis);
+  });
+  BANKS.forEach(bank => {
+    const key = bank.replace(/ /g,'_');
+    document.getElementById(`bank-cuenta-${key}`).addEventListener('input', invalidateAnalysis);
+    document.getElementById(`bank-medio-${key}`).addEventListener('input', invalidateAnalysis);
+  });
+
+  // Collapse toggle
+  document.getElementById('cfg-toggle').addEventListener('click', () => {
+    const body = document.getElementById('cfg-body');
+    body.classList.toggle('hidden');
+  });
+
+  // Analyze
+  document.getElementById('btn-analyze').addEventListener('click', doAnalyze);
+
+  // Re-analyze with map
+  document.getElementById('btn-remap').addEventListener('click', () => {
+    collectSerieMap();
+    doAnalyze();
+  });
+
+  // Generate
+  document.getElementById('btn-generate').addEventListener('click', doGenerate);
+
+  // Export config
+  document.getElementById('btn-export-config').addEventListener('click', () => {
+    const cfg = readConfig();
+    const blob = new Blob([JSON.stringify(cfg, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'config_ode.json'; a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // Import config
+  document.getElementById('inp-import-config').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    const fd = new FormData();
+    fd.append('config_json', text);
+    try {
+      const res = await fetch('/api/config/validate', {method:'POST', body:fd});
+      const data = await res.json();
+      if (res.ok) {
+        applyConfig(JSON.parse(text));
+        invalidateAnalysis();
+        alert('Configuración importada correctamente.');
+      } else {
+        alert('Error en la configuración importada: ' + (data.detail || 'Inválida'));
+      }
+    } catch {
+      alert('No se pudo leer el archivo de configuración.');
+    }
+    e.target.value = '';
+  });
+
+  // Logout
+  document.getElementById('btn-logout').addEventListener('click', async () => {
+    await fetch('/logout', {method:'POST'});
+    window.location.href = '/login';
+  });
+}
+
+function collectSerieMap() {
+  const selects = document.querySelectorAll('.serie-type-select');
+  selects.forEach(sel => {
+    if (sel.value) serieMap[sel.dataset.serie] = sel.value;
+  });
+  invalidateAnalysis();
+}
+
+// ============================================================
+// Analyze
+// ============================================================
+async function doAnalyze() {
+  if (!reporteFile) return;
+
+  const btn = document.getElementById('btn-analyze');
+  const status = document.getElementById('analyze-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Analizando...';
+  status.textContent = '';
+  document.getElementById('section-results').style.display = 'none';
+  document.getElementById('section-downloads').style.display = 'none';
+  analysisValid = false;
+  document.getElementById('btn-generate').disabled = true;
+
+  const fd = new FormData();
+  fd.append('reporte', reporteFile);
+  if (modeloFile) fd.append('modelo', modeloFile);
+  fd.append('year', document.getElementById('inp-year').value);
+  fd.append('month', document.getElementById('inp-month').value);
+  fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
+  fd.append('config_json', JSON.stringify(readConfig()));
+
+  try {
+    const res = await fetch('/api/analyze', {method:'POST', body:fd});
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = '❌ ' + (data.detail || 'Error al analizar');
+      return;
+    }
+    analysisData = data;
+    renderResults(data);
+    analysisValid = data.errors.length === 0;
+    document.getElementById('btn-generate').disabled = !analysisValid;
+    status.textContent = '';
+  } catch (err) {
+    status.textContent = '❌ Error de conexión: ' + err.message;
+  } finally {
+    btn.disabled = !reporteFile;
+    btn.textContent = 'Analizar archivos';
+  }
+}
+
+function renderResults(data) {
+  document.getElementById('section-results').style.display = 'block';
+  document.getElementById('stale-notice').style.display = 'none';
+
+  // Badge
+  const hasErrors = data.errors && data.errors.length > 0;
+  const badge = document.getElementById('result-badge');
+  badge.innerHTML = hasErrors
+    ? '<span class="badge badge-red">⛔ REVISAR</span>'
+    : '<span class="badge badge-green">✅ LISTO PARA GENERAR</span>';
+
+  // Errors
+  const errBlock = document.getElementById('errors-block');
+  const errList = document.getElementById('errors-list');
+  if (data.errors && data.errors.length) {
+    errList.innerHTML = data.errors.map(e => `<li class="msg-list msg-error">${e}</li>`).join('');
+    errBlock.style.display = 'block';
+  } else { errBlock.style.display = 'none'; }
+
+  // Warnings
+  const warnBlock = document.getElementById('warnings-block');
+  const warnList = document.getElementById('warnings-list');
+  if (data.warnings && data.warnings.length) {
+    warnList.innerHTML = data.warnings.map(w => `<li class="msg-list msg-warn">⚠️ ${w}</li>`).join('');
+    warnBlock.style.display = 'block';
+  } else { warnBlock.style.display = 'none'; }
+
+  // Info
+  const infoBlock = document.getElementById('info-block');
+  const infoList = document.getElementById('info-list');
+  if (data.info && data.info.length) {
+    infoList.innerHTML = data.info.map(i => `<li class="msg-list msg-info">ℹ️ ${i}</li>`).join('');
+    infoBlock.style.display = 'block';
+  } else { infoBlock.style.display = 'none'; }
+
+  // Type summary
+  const ts = data.type_summary || {};
+  const sumBlock = document.getElementById('type-summary-block');
+  if (ts) {
+    document.getElementById('type-summary-text').innerHTML =
+      `<span class="tip-01">Facturas (01): ${ts.facturas} — S/ ${fmt(ts.importe_facturas)}</span> &nbsp;|&nbsp; ` +
+      `<span class="tip-03">Boletas (03): ${ts.boletas} — S/ ${fmt(ts.importe_boletas)}</span> &nbsp;|&nbsp; ` +
+      `<span class="tip-unresolved">Sin resolver: ${ts.sin_resolver} — S/ ${fmt(ts.importe_sin_resolver)}</span>`;
+    sumBlock.style.display = 'block';
+  } else { sumBlock.style.display = 'none'; }
+
+  // Stats
+  const st = data.stats || {};
+  const statsBlock = document.getElementById('stats-block');
+  statsBlock.innerHTML = `Total en reporte: ${st.cantidad_original} | Excluidos (serie 0001): ${st.cantidad_excluida} | Procesados: ${st.cantidad_procesada} | Total procesado: S/ ${fmt(st.total_procesado)}`;
+  statsBlock.style.display = 'block';
+
+  // Preview
+  const previewBlock = document.getElementById('preview-block');
+  const previewBody = document.getElementById('preview-body');
+  if (data.preview && data.preview.length) {
+    previewBody.innerHTML = data.preview.map(r => {
+      const cls = r.tip_doc === '01' ? 'tip-01' : r.tip_doc === '03' ? 'tip-03' : 'tip-unresolved';
+      return `<tr>
+        <td>${r.banco}</td><td>${r.serie}</td><td>${r.documento}</td>
+        <td style="text-align:right;">S/ ${fmt(r.importe)}</td>
+        <td>${r.fecha}</td>
+        <td class="${cls}">${r.tip_doc || '—'}</td>
+      </tr>`;
+    }).join('');
+    previewBlock.style.display = 'block';
+  } else { previewBlock.style.display = 'none'; }
+
+  // Series editor (unresolved)
+  const editorBlock = document.getElementById('series-editor');
+  const seriesSelects = document.getElementById('series-selects');
+  if (data.unresolved_series && data.unresolved_series.length) {
+    seriesSelects.innerHTML = data.unresolved_series.map(serie => `
+      <div class="serie-row">
+        <span class="serie-label tip-unresolved">${serie}</span>
+        <select class="serie-type-select serie-select" data-serie="${serie}" onchange="onSerieSelectChange()">
+          <option value="">— Selecciona —</option>
+          <option value="01">01 — Factura</option>
+          <option value="03">03 — Boleta</option>
+        </select>
+      </div>`).join('');
+    // Pre-fill from existing serieMap
+    document.querySelectorAll('.serie-type-select').forEach(sel => {
+      const s = sel.dataset.serie;
+      // Check prefix matches
+      for (const [key, val] of Object.entries(serieMap)) {
+        if (s === key || s.startsWith(key)) { sel.value = val; break; }
+      }
+    });
+    editorBlock.style.display = 'block';
+    onSerieSelectChange();
+  } else {
+    editorBlock.style.display = 'none';
+  }
+
+  // Conciliation — derive from preview (approximate) or show placeholder
+  // Real conciliation requires generate; show a simplified summary here
+  const concilBlock = document.getElementById('concil-block');
+  concilBlock.style.display = 'none'; // shown after generate
+}
+
+function onSerieSelectChange() {
+  const selects = document.querySelectorAll('.serie-type-select');
+  const allSet = Array.from(selects).every(s => s.value !== '');
+  document.getElementById('btn-remap').disabled = !allSet;
+  if (!allSet) invalidateAnalysis();
+}
+
+// ============================================================
+// Generate
+// ============================================================
+async function doGenerate() {
+  if (!reporteFile || !analysisValid) return;
+
+  const btn = document.getElementById('btn-generate');
+  const status = document.getElementById('generate-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Generando...';
+  status.textContent = '';
+  document.getElementById('section-downloads').style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('reporte', reporteFile);
+  if (modeloFile) fd.append('modelo', modeloFile);
+  fd.append('year', document.getElementById('inp-year').value);
+  fd.append('month', document.getElementById('inp-month').value);
+  fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
+  fd.append('config_json', JSON.stringify(readConfig()));
+
+  try {
+    const res = await fetch('/api/generate', {method:'POST', body:fd});
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = '❌ ' + (data.detail || 'Error al generar');
+      btn.disabled = false;
+      btn.textContent = 'Generar carga';
+      return;
+    }
+    renderDownloads(data);
+    const summ = data.summary || {};
+    status.textContent = summ.resultado === 'CUADRADO'
+      ? `✅ ${summ.resultado} — Diferencia: S/ ${fmt(summ.diferencia || 0)}`
+      : `⚠️ ${summ.resultado} — Diferencia: S/ ${fmt(summ.diferencia || 0)}`;
+  } catch (err) {
+    status.textContent = '❌ Error de conexión: ' + err.message;
+  } finally {
+    btn.disabled = !analysisValid;
+    btn.textContent = 'Generar carga';
+  }
+}
+
+function renderDownloads(data) {
+  const section = document.getElementById('section-downloads');
+  const body = document.getElementById('downloads-body');
+  if (!data.files || !data.files.length) { section.style.display = 'none'; return; }
+
+  const summ = data.summary || {};
+  body.innerHTML = '';
+
+  // Summary
+  if (summ.resultado) {
+    const cls = summ.resultado === 'CUADRADO' ? 'badge-green' : 'badge-orange';
+    body.innerHTML += `<div style="margin-bottom:0.85rem;">
+      <span class="badge ${cls}" style="font-size:0.9rem;">${summ.resultado}</span>
+      <span style="font-size:0.85rem; color:var(--gray); margin-left:0.6rem;">
+        Diferencia: S/ ${fmt(summ.diferencia||0)} | Procesados: ${summ.cantidad_procesada||0} | Total: S/ ${fmt(summ.total_procesado||0)}
+      </span>
+    </div>`;
+  }
+
+  data.files.forEach((f, i) => {
+    const isPrimary = i === 0;
+    const bytes = Uint8Array.from(atob(f.data), c => c.charCodeAt(0));
+    const blob = new Blob([bytes], {type: f.mime});
+    const url = URL.createObjectURL(blob);
+    const note = isPrimary
+      ? '<br><small>⬅ <strong>Este es el archivo para la macro del estudio</strong></small>'
+      : (i === 2 ? '<br><small style="color:var(--orange);">Solo para revisión interna. No cargarlo en la macro.</small>' : '');
+    body.innerHTML += `
+      <div class="dl-card ${isPrimary ? 'primary-dl' : ''}">
+        <div class="dl-icon">${isPrimary ? '🟢' : (i===1?'📄':'📋')}</div>
+        <div class="dl-info">
+          <strong>${f.label}</strong>
+          <span style="font-size:0.82rem; color:var(--gray);">${f.name}</span>${note}
+        </div>
+        <a href="${url}" download="${f.name}" class="btn ${isPrimary?'btn-success':'btn-outline'} btn-sm">Descargar</a>
+      </div>`;
+  });
+
+  // Conciliation from summary
+  if (summ.conciliacion && summ.conciliacion.length) {
+    body.innerHTML += `<hr class="sep"><p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliación:</p>
+      <div style="overflow-x:auto;"><table class="concil-table"><thead><tr>
+        <th>Banco</th><th>Comprobante</th><th>Cantidad</th><th>Débito</th><th>Crédito</th><th>Diferencia</th><th>Estado</th>
+      </tr></thead><tbody>` +
+      summ.conciliacion.map(r => {
+        const isTotal = r.banco === 'TOTAL';
+        const estBadge = r.estado === 'CUADRADO'
+          ? '<span class="badge badge-green">CUADRADO</span>'
+          : '<span class="badge badge-orange">REVISAR</span>';
+        return `<tr class="${isTotal?'concil-total':''}">
+          <td>${r.banco}</td><td>${r.comprobante}</td><td>${r.cantidad}</td>
+          <td>S/ ${fmt(r.debito)}</td><td>S/ ${fmt(r.credito)}</td>
+          <td>S/ ${fmt(r.diferencia)}</td><td>${estBadge}</td>
+        </tr>`;
+      }).join('') +
+    '</tbody></table></div>';
+  }
+
+  section.style.display = 'block';
+}
+
+function fmt(n) {
+  return (typeof n === 'number' ? n : parseFloat(n) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+</script>
+</body>
+</html>
