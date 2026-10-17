@@ -27,6 +27,7 @@ DEFAULT_CONFIG = {
     'sub_diario': '01',
     'tipo_anexo': '02',
     'tipo_documento': '01',
+    'serie_map': {},
     'moneda': 'MN',
     'tipo_conversion': 'VTA',
     'doc_anulado': '0',
@@ -132,6 +133,154 @@ def normalize_document_value(value: Any) -> str:
         except Exception:
             pass
     return text
+
+
+_TIP_DOC_ALIASES: Dict[str, str] = {
+    '1': '01', '01': '01',
+    '3': '03', '03': '03',
+}
+
+
+def normalize_tip_doc_code(value: Any) -> Optional[str]:
+    """Normalize a document-type code to '01' (Factura) or '03' (Boleta).
+
+    Accepts integer 1/3, string '1'/'01'/'3'/'03', or float 1.0/3.0.
+    Returns None for anything unrecognised.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, (int, np.integer)):
+        code = str(int(value))
+    elif isinstance(value, (float, np.floating)):
+        if np.isnan(value):
+            return None
+        try:
+            code = str(int(value))
+        except (ValueError, OverflowError):
+            return None
+    else:
+        code = str(value).strip()
+    return _TIP_DOC_ALIASES.get(code)
+
+
+def resolve_tip_doc(
+    row: Dict[str, Any], config: Dict[str, Any]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve the accounting document type ('01' or '03') for one invoice row.
+
+    Returns (tip_doc, conflict_msg):
+        tip_doc      – '01', '03', or None when unresolvable.
+        conflict_msg – human-readable explanation of a conflict or missing type,
+                       or None when resolution succeeded cleanly.
+
+    Resolution priority
+    -------------------
+    1. Explicit ``tipo_comprobante`` column in the row (values must be 01/03).
+    2. Prefix match against ``config['serie_map']`` (exact first, then startswith).
+    3. Global ``config['tipo_documento']`` fallback **only** when ``serie_map``
+       is empty (backward-compat for single-type reports).
+
+    Blocking conditions
+    -------------------
+    * Explicit type is present but unrecognised → None + message.
+    * Explicit type and mapped type are BOTH resolved and disagree → None + message.
+    * ``serie_map`` is configured but no prefix matches and no explicit type → None + message.
+    * ``serie_map`` entry carries an invalid code → None + message.
+    """
+    serie_map: Dict[str, str] = config.get('serie_map', {}) or {}
+
+    # 1. Explicit column
+    raw_explicit = row.get('tipo_comprobante', None)
+    explicit: Optional[str] = None
+    if raw_explicit is not None and str(raw_explicit).strip():
+        explicit = normalize_tip_doc_code(raw_explicit)
+        if explicit is None:
+            return None, (
+                f"Tipo de comprobante explícito no reconocido: {raw_explicit!r}. "
+                "Valores admitidos: 01 (Factura) o 03 (Boleta)."
+            )
+
+    # 2. Series prefix map (exact match first, then startswith)
+    serie = normalize_serie(row.get('serie', ''))
+    mapped: Optional[str] = None
+    matched_prefix: Optional[str] = None
+    for prefix, code in serie_map.items():
+        p = str(prefix).upper()
+        if serie.upper() == p or serie.upper().startswith(p):
+            mapped = normalize_tip_doc_code(code)
+            matched_prefix = prefix
+            if mapped is None:
+                return None, (
+                    f"El mapeo de series define el código {code!r} para el prefijo "
+                    f"{prefix!r}, que no es un tipo de comprobante válido (use '01' o '03')."
+                )
+            break
+
+    # Conflict: explicit and mapped both resolved but disagree
+    if explicit is not None and mapped is not None and explicit != mapped:
+        return None, (
+            f"Conflicto: la columna tipo_comprobante indica {explicit!r} pero el "
+            f"mapeo de serie {serie!r} (prefijo {matched_prefix!r}) indica {mapped!r}. "
+            "Corrija el reporte o ajuste 'serie_map' en la configuración."
+        )
+
+    if explicit is not None:
+        return explicit, None
+    if mapped is not None:
+        return mapped, None
+
+    # serie_map configured but no prefix matched (and no explicit column)
+    if serie_map:
+        return None, (
+            f"La serie {serie!r} no coincide con ningún prefijo del mapeo configurado. "
+            f"Prefijos registrados: {list(serie_map.keys())}. "
+            "Agregue una entrada en 'serie_map' o incluya la columna 'tipo_comprobante'."
+        )
+
+    # 3. Global fallback — only when serie_map is empty
+    global_tipo = normalize_tip_doc_code(str(config.get('tipo_documento', '01')))
+    if global_tipo in ('01', '03'):
+        return global_tipo, None
+
+    return None, (
+        f"No se pudo determinar el tipo de comprobante para la serie {serie!r}. "
+        "Configure 'serie_map' en la interfaz o en config.json, "
+        "o incluya la columna 'tipo_comprobante' en el reporte."
+    )
+
+
+def resolve_tip_doc_for_df(
+    df: pd.DataFrame, config: Dict[str, Any]
+) -> Tuple[pd.Series, List[Dict[str, Any]]]:
+    """Resolve document types for every row in a processed DataFrame.
+
+    Returns
+    -------
+    tip_doc_series : pd.Series
+        '01', '03', or '' (unresolved) for each row.
+    observations : list of dict
+        One entry per unresolvable/conflicting row with keys:
+        fila, serie, documento, tipo ('CONFLICTO' or 'DESCONOCIDO'), mensaje.
+    """
+    results: List[str] = []
+    observations: List[Dict[str, Any]] = []
+    for idx, row in df.iterrows():
+        tip_doc, msg = resolve_tip_doc(row.to_dict(), config)
+        if tip_doc is None:
+            results.append('')
+            is_conflict = msg is not None and (
+                'Conflicto' in msg or 'conflicto' in msg
+            )
+            observations.append({
+                'fila': int(idx) + 1,
+                'serie': str(row.get('serie', '')),
+                'documento': str(row.get('documento', '')),
+                'tipo': 'CONFLICTO' if is_conflict else 'DESCONOCIDO',
+                'mensaje': msg or 'No se pudo resolver el tipo de comprobante.',
+            })
+        else:
+            results.append(tip_doc)
+    return pd.Series(results, index=df.index, dtype=str), observations
 
 
 def serialize_serie_num(row: Dict[str, Any]) -> str:
@@ -277,6 +426,11 @@ def read_raw_ode_report(path: str | Path) -> pd.DataFrame:
         'tipopago': 'tipopago',
         'codigoemp': 'codigoemp',
         'comentarios': 'comentarios',
+        # Explicit document-type column (several possible names after normalisation)
+        'tipo_comprobante': 'tipo_comprobante',
+        'tipodoc': 'tipo_comprobante',
+        'tipodocumento': 'tipo_comprobante',
+        'tipo_doc_comp': 'tipo_comprobante',
     }
     rename_map = {key: value for key, value in required_aliases.items() if key in cleaned.columns}
     cleaned = cleaned.rename(columns=rename_map)
@@ -406,7 +560,7 @@ def save_config(path: str | Path, config: Dict[str, Any]) -> None:
         json.dump(config, fh, ensure_ascii=False, indent=2)
 
 
-def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calculo: str = 'fecha_cancelacion') -> Tuple[List[str], List[str], List[str]]:
+def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calculo: str = 'fecha_cancelacion', config: Optional[Dict[str, Any]] = None) -> Tuple[List[str], List[str], List[str]]:
     errors: List[str] = []
     warnings: List[str] = []
     info: List[str] = []
@@ -472,6 +626,16 @@ def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calcu
 
     if 'banco' in df.columns and 'OTROS' in df['banco'].astype(str).unique():
         warnings.append('Los movimientos OTROS se registrarán como cobros en efectivo/Caja con la cuenta 10100001 y sin medio de pago.')
+
+    # --- TIP_DOC resolution (requires config to be supplied) ---
+    if config is not None:
+        effective_cfg = {**DEFAULT_CONFIG, **(config or {})}
+        _, tip_doc_obs = resolve_tip_doc_for_df(df, effective_cfg)
+        for obs in tip_doc_obs:
+            errors.append(
+                f"Fila {obs['fila']} (serie={obs['serie']!r}, "
+                f"doc={obs['documento']!r}): {obs['mensaje']}"
+            )
 
     if not errors:
         info.append('Archivo legible y con estructura válida.')
@@ -548,6 +712,13 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
             else:
                 doc_date = month_end
 
+            tip_doc, tip_doc_msg = resolve_tip_doc(row.to_dict(), config)
+            if tip_doc is None:
+                raise ValueError(
+                    f"Tipo de comprobante no resuelto para serie={row.get('serie', '?')!r} "
+                    f"doc={row.get('documento', '?')!r}: {tip_doc_msg}"
+                )
+
             rows.append({
                 'CTA_CONTABLE': str(config.get('cuenta_clientes', '12120001')),
                 'ANO_MES': str(periodo),
@@ -556,7 +727,7 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
                 'FEC_DOC': doc_date,
                 'TIP_ANEXO': str(config.get('tipo_anexo', '02')),
                 'COD_ANEXO': normalize_document_value(row.get('numruc', '')),
-                'TIP_DOC': str(config.get('tipo_documento', '01')),
+                'TIP_DOC': tip_doc,
                 'SERIE_NUM': serialize_serie_num({'serie': row.get('serie', ''), 'documento': row.get('documento', '')}),
                 'FEC_VENC': doc_date,
                 'MONEDA': str(config.get('moneda', 'MN')),
@@ -669,6 +840,17 @@ def create_validation_report(summary: Dict[str, Any], source_path: Path, output_
             conciliacion_df.to_excel(writer, index=False, sheet_name='Conciliacion')
         else:
             pd.DataFrame([{'banco': 'N/A', 'comprobante': 'N/A', 'cantidad': 0, 'debito': 0, 'credito': 0, 'diferencia': 0, 'estado': 'N/A'}]).to_excel(writer, index=False, sheet_name='Conciliacion')
+
+        tip_doc_summary = summary.get('tip_doc_summary', {})
+        pd.DataFrame([
+            ['Facturas (01)', tip_doc_summary.get('01', 0)],
+            ['Boletas (03)', tip_doc_summary.get('03', 0)],
+            ['Sin resolver', tip_doc_summary.get('sin_resolver', 0)],
+        ], columns=['Tipo', 'Cantidad']).to_excel(writer, index=False, sheet_name='TipoDoc')
+
+        tip_doc_rows_df = pd.DataFrame(summary.get('tip_doc_obs', []))
+        if not tip_doc_rows_df.empty:
+            tip_doc_rows_df.to_excel(writer, index=False, sheet_name='TipoDoc_Obs')
 
         fill = PatternFill('solid', fgColor='1F2A44')
         font = Font(color='FFFFFF', bold=True)
@@ -862,7 +1044,7 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
     if model_path is not None:
         validate_model_structure(model_path, OUTPUT_COLUMNS)
 
-    errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo)
+    errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo, config=config)
     if errors:
         raise ValueError('Se encontraron errores bloqueantes:\n- ' + '\n- '.join(errors))
 
@@ -903,6 +1085,20 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
         raise ValueError('Existen celdas NaN/NaT/None en la carga.')
 
     conciliacion = build_conciliacion(carga)
+
+    # TIP_DOC breakdown (from H-rows, which are the individual invoices/boletas)
+    h_rows = carga[carga['DEBE HABER'] == 'H']
+    tip_doc_vals = h_rows['TIP_DOC'].astype(str)
+    tip_doc_summary = {
+        '01': int((tip_doc_vals == '01').sum()),
+        '03': int((tip_doc_vals == '03').sum()),
+        'sin_resolver': int(((tip_doc_vals != '01') & (tip_doc_vals != '03')).sum()),
+    }
+    # Attach tip_doc to processed rows for the validation report
+    tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(processed, config)
+    processed_display = processed.copy()
+    processed_display['tip_doc_asignado'] = tip_doc_series
+
     summary = {
         'fecha_generacion': datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
         'periodo': periodo,
@@ -914,9 +1110,11 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
         'total_credito': round(total_credito, 2),
         'diferencia': round(diff, 2),
         'resultado': 'CUADRADO' if diff <= 0.01 else 'REVISAR',
-        'procesados': processed.to_dict(orient='records'),
+        'procesados': processed_display.to_dict(orient='records'),
         'excluidos': excluded.to_dict(orient='records'),
         'conciliacion': conciliacion,
+        'tip_doc_summary': tip_doc_summary,
+        'tip_doc_obs': tip_doc_obs,
         'observaciones': [{'tipo': 'warning', 'mensaje': m} for m in warnings] + [{'tipo': 'info', 'mensaje': m} for m in info],
     }
 
@@ -949,6 +1147,7 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
             'diferencia': round(diff, 2),
             'resultado': 'CUADRADO' if diff <= 0.01 else 'REVISAR',
             'conciliacion': conciliacion,
+            'tip_doc_summary': tip_doc_summary,
         },
         'output_file': str(out_file_xls),       # primary .xls — used by the macro
         'output_file_xlsx': str(out_file_xlsx), # backup .xlsx — for review only
