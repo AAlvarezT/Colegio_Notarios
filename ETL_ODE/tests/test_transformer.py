@@ -35,6 +35,10 @@ _ETL_DIR = Path(__file__).resolve().parent.parent
 SOURCE_PATH = _ETL_DIR / 'reporte de cancelados agosto 2026.xlsx'
 MODEL_PATH = _ETL_DIR / 'FACTURA 07-2026 SHIKINA.xls'
 
+# The real agosto-2026 report contains only 'FE01' series (all facturas).
+# No tipo_comprobante column is present, so a serie_map is required.
+_REAL_CONFIG = {'serie_map': {'FE01': '01'}}
+
 
 # ---------------------------------------------------------------------------
 # 1. Raw split — counts match the UI requirements exactly
@@ -70,7 +74,7 @@ def test_exclusion_serie_0001():
 
 def test_d_row_document_fields_blank():
     df = load_ode_report(SOURCE_PATH)
-    carga = build_carga_dataframe(df, periodo='202608', config={})
+    carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     d_rows = carga[carga['DEBE HABER'] == 'D']
     assert d_rows['TIP_ANEXO'].astype(str).str.strip().eq('').all(),  'TIP_ANEXO should be blank on D rows'
     assert d_rows['COD_ANEXO'].astype(str).str.strip().eq('').all(),  'COD_ANEXO should be blank on D rows'
@@ -84,7 +88,7 @@ def test_d_row_document_fields_blank():
 
 def test_d_row_fec_doc_is_month_end():
     df = load_ode_report(SOURCE_PATH)
-    carga = build_carga_dataframe(df, periodo='202608', config={})
+    carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     d_rows = carga[carga['DEBE HABER'] == 'D']
     for fec in d_rows['FEC_DOC']:
         dt = pd.to_datetime(fec, errors='coerce')
@@ -106,7 +110,7 @@ EXPECTED_CONC = [
 
 def test_conciliacion_exact_values():
     df = load_ode_report(SOURCE_PATH)
-    carga = build_carga_dataframe(df, periodo='202608', config={})
+    carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     conc = build_conciliacion(carga)
     assert len(conc) == 5, f'expected 5 conciliation rows (4 banks + total), got {len(conc)}'
     for i, (banco, comp, cantidad, debito, credito, diferencia) in enumerate(EXPECTED_CONC):
@@ -126,7 +130,7 @@ def test_conciliacion_exact_values():
 
 def test_output_has_exactly_22_columns(tmp_path):
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
         model_path=MODEL_PATH,
     )
@@ -140,7 +144,7 @@ def test_output_has_exactly_22_columns(tmp_path):
 
 def test_output_date_and_number_formats(tmp_path):
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     # Backup .xlsx retains openpyxl number format metadata for review
@@ -164,7 +168,7 @@ def test_output_date_and_number_formats(tmp_path):
 
 def test_process_report_real_report_generates_valid_carga(tmp_path):
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
         model_path=MODEL_PATH,
     )
@@ -250,7 +254,7 @@ def test_otros_usa_cuenta_caja_y_medio_vacio():
     assert DEFAULT_CONFIG['bancos']['OTROS'] == {'cuenta_contable': '10100001', 'medio_pago': ''}
     assert get_bank_default_config('OTROS') == {'cuenta_contable': '10100001', 'medio_pago': ''}
     df = load_ode_report(SOURCE_PATH)
-    out = build_carga_dataframe(df, periodo='202608', config={})
+    out = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
 
     otros_d = out[(out['_banco'] == 'OTROS') & (out['DEBE HABER'] == 'D')]
     assert not otros_d.empty, 'No OTROS D-rows found'
@@ -268,7 +272,7 @@ def test_otros_usa_cuenta_caja_y_medio_vacio():
 def test_otros_excel_medio_pago_realmente_vacio(tmp_path):
     """MEDIO_PAGO must be genuinely empty in the exported .xls for all OTROS rows."""
     df = load_ode_report(SOURCE_PATH)
-    carga = build_carga_dataframe(df, periodo='202608', config={})
+    carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
 
     # All OTROS rows (D and H) must have empty MEDIO_PAGO in the DataFrame
     otros_rows = carga[carga['_banco'] == 'OTROS']
@@ -284,7 +288,7 @@ def test_otros_excel_medio_pago_realmente_vacio(tmp_path):
     otros_comprobante = str(otros_d.iloc[0]['COMPROBANTE'])
 
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     # Verify in the primary .xls via xlrd
@@ -332,7 +336,7 @@ def test_config_migracion_legacy_otros(tmp_path):
 
 def test_exportacion_sin_nan_ni_nat():
     df = load_ode_report(SOURCE_PATH)
-    out = build_carga_dataframe(df, periodo='202608', config={})
+    out = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     assert not out[OUTPUT_COLUMNS].isnull().values.any()
     text = out[OUTPUT_COLUMNS].astype(str)
     assert not text.apply(lambda col: col.str.lower().str.contains('nan')).any().any()
@@ -346,7 +350,7 @@ def test_model_file_uses_expected_structure():
 
 def test_igualdad_debe_haber():
     df = load_ode_report(SOURCE_PATH)
-    out = build_carga_dataframe(df, periodo='202608', config={})
+    out = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     debito = out[out['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum()
     credito = out[out['DEBE HABER'] == 'H']['IMPORT_TOTAL'].sum()
     assert abs(debito - credito) <= 0.01
@@ -390,7 +394,7 @@ def test_ui_allows_empty_medio_pago_and_pending_state(tmp_path):
     original_showinfo = messagebox.showinfo
     messagebox.showinfo = lambda *args, **kwargs: None
     try:
-        app._finish_generation(process_report(SOURCE_PATH, tmp_path, config={}, fecha_calculo='fecha_cancelacion', periodo='202608'))
+        app._finish_generation(process_report(SOURCE_PATH, tmp_path, config=_REAL_CONFIG, fecha_calculo='fecha_cancelacion', periodo='202608'))
     finally:
         messagebox.showinfo = original_showinfo
     assert app.cards['balance'].cget('text') == 'S/0.00'
@@ -440,7 +444,7 @@ def _xls_workbook_and_headers(result: dict):
 def test_xls_file_exists(tmp_path):
     """1. Primary .xls file is present on disk."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     xls_path = Path(result['output_file'])
@@ -451,7 +455,7 @@ def test_xls_file_exists(tmp_path):
 def test_xls_readable_with_xlrd(tmp_path):
     """2. xlrd can open the file without error (proves it is real BIFF8, not a renamed .xlsx)."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     wb = xlrd.open_workbook(result['output_file'])
@@ -463,7 +467,7 @@ def test_xls_readable_with_xlrd(tmp_path):
 def test_xls_has_exactly_22_columns(tmp_path):
     """3. Exactly 22 columns matching OUTPUT_COLUMNS; no _banco."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, ws, headers = _xls_workbook_and_headers(result)
@@ -475,7 +479,7 @@ def test_xls_has_exactly_22_columns(tmp_path):
 def test_xls_has_145_data_rows(tmp_path):
     """4. 145 data rows (header row excluded)."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, ws, _ = _xls_workbook_and_headers(result)
@@ -486,7 +490,7 @@ def test_xls_has_145_data_rows(tmp_path):
 def test_xls_has_4d_141h_rows(tmp_path):
     """5. Exactly 4 D-rows and 141 H-rows."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, ws, headers = _xls_workbook_and_headers(result)
@@ -505,7 +509,7 @@ def test_xls_has_4d_141h_rows(tmp_path):
 def test_xls_totals_26757(tmp_path):
     """6. Debe and Haber each sum to S/26,757.00; difference = S/0.00."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, ws, headers = _xls_workbook_and_headers(result)
@@ -528,7 +532,7 @@ def test_xls_totals_26757(tmp_path):
 def test_xls_otros_uses_cuenta_10100001(tmp_path):
     """7. All D-rows for OTROS use account 10100001."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, ws, headers = _xls_workbook_and_headers(result)
@@ -551,13 +555,13 @@ def test_xls_otros_uses_cuenta_10100001(tmp_path):
 def test_xls_otros_medio_pago_empty(tmp_path):
     """8. MEDIO_PAGO is empty for all D and H rows belonging to OTROS."""
     df = load_ode_report(SOURCE_PATH)
-    carga = build_carga_dataframe(df, periodo='202608', config={})
+    carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     otros_d = carga[(carga['_banco'] == 'OTROS') & (carga['DEBE HABER'] == 'D')]
     assert not otros_d.empty, 'No OTROS D-rows in DataFrame'
     otros_comprobante = str(otros_d.iloc[0]['COMPROBANTE'])
 
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, ws, headers = _xls_workbook_and_headers(result)
@@ -588,7 +592,7 @@ def test_xls_otros_medio_pago_empty(tmp_path):
 def test_xls_no_banco_column(tmp_path):
     """9. The string _banco must not appear anywhere in the .xls headers."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     _, _, headers = _xls_workbook_and_headers(result)
@@ -600,7 +604,7 @@ def test_xls_no_banco_column(tmp_path):
 def test_validation_report_is_xlsx(tmp_path):
     """10. REPORTE_VALIDACION always generates as .xlsx regardless of .xls change."""
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
     report_path = Path(result['report_file'])
@@ -625,7 +629,7 @@ def test_xls_cell_types_match_model(tmp_path):
     sheet is named exactly 'Hoja1'.
     """
     result = process_report(
-        SOURCE_PATH, tmp_path, config={},
+        SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
         model_path=MODEL_PATH,
     )

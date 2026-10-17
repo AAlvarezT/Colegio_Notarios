@@ -62,6 +62,7 @@ class ConversorODEApp(tk.Tk):
         self.last_result: dict = {}
         self.serie_map_widgets: dict[str, ttk.Combobox] = {}
         self._analysis_valid = False
+        self._analysis_version = 0
 
         self._build_ui()
         self._apply_config_to_fields()
@@ -398,6 +399,7 @@ class ConversorODEApp(tk.Tk):
         if not self._analysis_valid:
             return
         self._analysis_valid = False
+        self._analysis_version += 1
         self.analysis_df = pd.DataFrame()
         self.last_result = {}
         self.preview.delete(*self.preview.get_children())
@@ -424,11 +426,14 @@ class ConversorODEApp(tk.Tk):
                 'cuenta_contable': fields['cuenta'].get().strip() or defaults['cuenta_contable'],
                 'medio_pago': fields['medio'].get().strip(),
             }
-        # Collect live serie_map from the mapping editor widgets
+        # Collect live serie_map from the mapping editor widgets — empty combos are skipped
         live_map: dict[str, str] = {}
         for serie, combo in self.serie_map_widgets.items():
-            val = combo.get().split()[0]  # '01' or '03' from '01 (Factura)' etc.
-            code = normalize_tip_doc_code(val)
+            raw = combo.get().strip()
+            if not raw:
+                continue  # unresolved selection — keep as sin resolver, no auto-assign
+            parts = raw.split()
+            code = normalize_tip_doc_code(parts[0]) if parts else None
             if code:
                 live_map[serie] = code
         if live_map:
@@ -475,14 +480,17 @@ class ConversorODEApp(tk.Tk):
         periodo = f"{int(self.year_var.get()):04d}{self.month_var.get()}"
         fecha_calculo = self.date_selector.get()
         cfg = self._collect_config()
+        self._analysis_valid = False
+        self._analysis_version += 1
+        current_version = self._analysis_version
         self.progress['value'] = 10
         self.status_label.config(text='Analizando reporte...')
         threading.Thread(
             target=self._analyze_worker,
-            args=(source_path, periodo, fecha_calculo, cfg),
+            args=(source_path, periodo, fecha_calculo, cfg, current_version),
             daemon=True).start()
 
-    def _analyze_worker(self, source_path: str, periodo: str, fecha_calculo: str, cfg: dict) -> None:
+    def _analyze_worker(self, source_path: str, periodo: str, fecha_calculo: str, cfg: dict, version: int) -> None:
         try:
             raw, excluded, processed = analyze_source(source_path)
             errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo, config=cfg)
@@ -502,7 +510,8 @@ class ConversorODEApp(tk.Tk):
                 'tip_docs': tip_docs, 'tip_doc_obs': tip_doc_obs,
             }
             self.after(0, lambda: self._refresh_analysis(
-                raw, excluded, processed, errors, warnings, info, new_banks, tip_docs, tip_doc_obs))
+                raw, excluded, processed, errors, warnings, info, new_banks,
+                tip_docs, tip_doc_obs, version=version))
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror('Error', str(exc)))
             self.after(0, lambda: self.status_label.config(text='ERROR AL ANALIZAR'))
@@ -513,7 +522,11 @@ class ConversorODEApp(tk.Tk):
                           processed: pd.DataFrame, errors: list,
                           warnings: list, info: list, new_banks: list,
                           tip_docs: 'pd.Series | None' = None,
-                          tip_doc_obs: 'list | None' = None) -> None:
+                          tip_doc_obs: 'list | None' = None,
+                          version: int | None = None) -> None:
+        # Discard stale results from a superseded analysis
+        if version is not None and version != self._analysis_version:
+            return
         state_after_analysis = 'LISTO PARA GENERAR' if not errors else 'REVISAR'
         self._analysis_valid = True
         self.status_label.config(text=state_after_analysis)
@@ -547,8 +560,19 @@ class ConversorODEApp(tk.Tk):
             n_01  = int((tip_docs == '01').sum())
             n_03  = int((tip_docs == '03').sum())
             n_unk = int((tip_docs == '').sum())
-            self._type_summary_var.set(
-                f'Facturas (01): {n_01}   │   Boletas (03): {n_03}   │   Sin resolver: {n_unk}')
+            if 'importe_cancelado' in processed.columns:
+                imp_01  = float(processed.loc[tip_docs == '01', 'importe_cancelado'].sum()) if n_01  > 0 else 0.0
+                imp_03  = float(processed.loc[tip_docs == '03', 'importe_cancelado'].sum()) if n_03  > 0 else 0.0
+                imp_unk = float(processed.loc[tip_docs == '',   'importe_cancelado'].sum()) if n_unk > 0 else 0.0
+                self._type_summary_var.set(
+                    f'Facturas (01): {n_01} — S/{imp_01:,.2f}   │   '
+                    f'Boletas (03): {n_03} — S/{imp_03:,.2f}   │   '
+                    f'Sin resolver: {n_unk} — S/{imp_unk:,.2f}'
+                )
+            else:
+                self._type_summary_var.set(
+                    f'Facturas (01): {n_01}   │   Boletas (03): {n_03}   │   Sin resolver: {n_unk}'
+                )
             self._populate_series_tree(processed, tip_docs)
             self._populate_serie_map_editor(processed, tip_docs)
         else:
@@ -640,34 +664,49 @@ class ConversorODEApp(tk.Tk):
                 values=['01 (Factura)', '03 (Boleta)'],
                 width=20, state='readonly')
             combo.pack(side='left')
+            combo.bind('<<ComboboxSelected>>', self._on_serie_map_changed)
             self.serie_map_widgets[serie] = combo
 
         self._map_rows_frame.pack(fill='x')
         self._apply_map_btn.pack(side='left')
 
+    def _on_serie_map_changed(self, event: object = None) -> None:
+        """Soft-invalidate: mark analysis stale when a series-mapping combo changes."""
+        if self._analysis_valid:
+            self._analysis_valid = False
+            self._analysis_version += 1
+            self.status_label.config(text='REVISAR — mapeo modificado, re-analice')
+            self.cards['status'].config(text='REVISAR')
+
     def _apply_serie_map(self) -> None:
-        """Save the editor's mapping into config and re-analyse."""
+        """Save the editor's mapping into config and re-analyse.
+
+        Requires ALL unresolved series to have a selection before saving.
+        Empty selectors are reported to the user without saving partial state.
+        """
+        incomplete = [s for s, combo in self.serie_map_widgets.items() if not combo.get().strip()]
+        if incomplete:
+            messagebox.showwarning(
+                'Mapeo incompleto',
+                f'Las siguientes series aún no tienen tipo asignado:\n'
+                + '\n'.join(f'  • {s}' for s in incomplete)
+                + '\n\nAsigne 01 (Factura) o 03 (Boleta) a cada una antes de continuar.'
+            )
+            return
+
         new_map: dict[str, str] = {}
         for serie, combo in self.serie_map_widgets.items():
-            val = combo.get()
-            if not val:
-                messagebox.showwarning(
-                    'Mapeo incompleto',
-                    f'Asigne un tipo a la serie {serie!r} antes de aplicar.')
-                return
-            code = val.split()[0]
-            from transformer import normalize_tip_doc_code as _ntc
-            normalized = _ntc(code)
-            if normalized:
-                new_map[serie] = normalized
+            parts = combo.get().strip().split()
+            code = normalize_tip_doc_code(parts[0]) if parts else None
+            if code:
+                new_map[serie] = code
 
-        # Merge into config
         cfg = self._collect_config()
         cfg['serie_map'] = {**cfg.get('serie_map', {}), **new_map}
         self.config = cfg
         save_config(APP_DIR / 'config.json', cfg)
-        # Re-analyse with the updated mapping
-        self._analysis_valid = False  # allow re-analysis
+        self._analysis_valid = False
+        self._analysis_version += 1
         self.analyze_files()
 
     # ------------------------------------------------------------------

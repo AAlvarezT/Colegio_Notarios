@@ -32,11 +32,11 @@ Después de analizar el archivo, la sección **Tipos de comprobante detectados**
 | Prioridad | Fuente | Condición |
 |-----------|--------|-----------|
 | 1 | Columna `tipo_comprobante` del reporte | Cuando existe y contiene `01` o `03` |
-| 2 | Mapeo de series (`serie_map` en config) | Serie coincide con un prefijo configurado |
-| 3 | `tipo_documento` global (respaldo) | Solo cuando `serie_map` está vacío (compat. anterior) |
+| 2 | Mapeo de series (`serie_map` en config) | Coincidencia exacta primero, luego prefijo más largo |
 
-Códigos admitidos: `01` = Factura, `03` = Boleta.  
-Un tipo desconocido o un conflicto entre columna y mapeo **bloquea la generación** con mensaje de fila y comprobante.
+Códigos admitidos: `01` = Factura, `03` = Boleta.
+
+Si ninguna fuente resuelve el tipo de un comprobante, **la generación se bloquea** y el registro aparece en el editor de series. No existe respaldo automático: el campo `tipo_documento` en `config.json` es un valor histórico que se conserva por compatibilidad de lectura, pero ya no se usa para clasificar comprobantes.
 
 ### Configurar el mapeo de series
 
@@ -55,9 +55,8 @@ O use el editor gráfico en la sección **Tipos de comprobante detectados** → 
 
 ### Compatibilidad con configuraciones anteriores
 
-- Configuraciones existentes con `tipo_documento: "01"` y `serie_map` vacío siguen funcionando sin cambios (todos los comprobantes reciben `01`).
-- El campo `tipo_documento` ahora se muestra como **(respaldo global)** en la interfaz.
-- Al configurar `serie_map`, el respaldo global se desactiva; todas las series deben estar cubiertas por el mapa o por una columna explícita.
+- El campo `tipo_documento` en `config.json` se sigue leyendo, pero **no se usa para clasificar comprobantes**. Es un valor histórico preservado para no romper archivos existentes.
+- Reportes anteriores con una sola serie (por ejemplo `FE01`) deben agregar esa serie al `serie_map` o contar con la columna `tipo_comprobante`. El editor de series en la interfaz facilita este paso.
 
 ## Uso en la macro contable del estudio
 El archivo que se debe seleccionar en la herramienta **"Pasar ventas y clientes a formato TXT"** es:

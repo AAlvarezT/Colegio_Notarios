@@ -144,23 +144,113 @@ _TIP_DOC_ALIASES: Dict[str, str] = {
 def normalize_tip_doc_code(value: Any) -> Optional[str]:
     """Normalize a document-type code to '01' (Factura) or '03' (Boleta).
 
-    Accepts integer 1/3, string '1'/'01'/'3'/'03', or float 1.0/3.0.
-    Returns None for anything unrecognised.
+    Accepted: integer 1/3, strings '1'/'01'/'3'/'03', exact floats 1.0/3.0.
+    Rejected: non-integer floats (e.g. 1.9), booleans, infinities, NaN, and
+    anything else that does not map to 01 or 03.  No rounding or truncation.
     """
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if value is None:
+        return None
+    # bool subclasses int in Python — reject explicitly before int check
+    if isinstance(value, (bool, np.bool_)):
         return None
     if isinstance(value, (int, np.integer)):
         code = str(int(value))
     elif isinstance(value, (float, np.floating)):
-        if np.isnan(value):
+        if np.isnan(value) or np.isinf(value):
             return None
-        try:
-            code = str(int(value))
-        except (ValueError, OverflowError):
+        int_val = int(value)
+        if value != int_val:          # reject non-integer floats (e.g. 1.9)
             return None
+        code = str(int_val)
     else:
         code = str(value).strip()
+    if not code:
+        return None
     return _TIP_DOC_ALIASES.get(code)
+
+
+def validate_serie_map(serie_map: Dict[str, str]) -> Optional[str]:
+    """Validate serie_map for empty prefixes and contradictory normalised keys.
+
+    Returns an error message if the map is structurally invalid, else None.
+    Must be called once per batch (not per row) before using the map.
+    """
+    if not serie_map:
+        return None
+    seen: Dict[str, Tuple[str, str]] = {}   # norm_key → (original_key, raw_code)
+    for key, code in serie_map.items():
+        k = str(key).strip().upper()
+        if not k:
+            return (
+                "La clave vacía no está permitida en 'serie_map'. "
+                "Elimine o corrija la entrada vacía."
+            )
+        if k in seen:
+            prev_key, prev_code = seen[k]
+            this_type = normalize_tip_doc_code(code)
+            prev_type = normalize_tip_doc_code(prev_code)
+            if this_type != prev_type:
+                _inv = 'inválido'
+                return (
+                    f"Claves contradictorias en serie_map: {key!r} y {prev_key!r} "
+                    f"se normalizan a '{k}' pero asignan tipos distintos "
+                    f"({code!r} → {this_type or _inv} "
+                    f"vs {prev_code!r} → {prev_type or _inv}). "
+                    "Corrija o elimine una de las dos entradas."
+                )
+        seen[k] = (key, code)
+    return None
+
+
+def _match_serie_map(
+    serie: str, serie_map: Dict[str, str]
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Return (mapped_code, matched_key, error_msg) using deterministic rules.
+
+    Resolution order (independent of dict insertion order):
+    1. Exact normalised match (stripped, uppercased).
+    2. Longest prefix match among all keys that are a prefix of the serie.
+
+    Returns (None, None, None) when the serie has no match in the map.
+    Returns (None, key, error_msg) when the matched entry has an invalid code.
+    """
+    s = serie.strip().upper()
+    exact_code: Optional[str] = None
+    exact_key:  Optional[str] = None
+    best_code:  Optional[str] = None
+    best_key:   Optional[str] = None
+    best_len:   int = 0
+
+    for key, code in serie_map.items():
+        k = str(key).strip().upper()
+        if not k:
+            continue
+        if s == k:
+            normalized = normalize_tip_doc_code(code)
+            if normalized is None:
+                return None, key, (
+                    f"El mapeo define el código {code!r} para la clave {key!r}, "
+                    "que no es un tipo de comprobante válido (use '01' o '03')."
+                )
+            exact_code = normalized
+            exact_key = key
+            break  # exact match is definitive
+        if s.startswith(k) and len(k) > best_len:
+            normalized = normalize_tip_doc_code(code)
+            if normalized is None:
+                return None, key, (
+                    f"El mapeo define el código {code!r} para el prefijo {key!r}, "
+                    "que no es un tipo de comprobante válido (use '01' o '03')."
+                )
+            best_code = normalized
+            best_key = key
+            best_len = len(k)
+
+    if exact_code is not None:
+        return exact_code, exact_key, None
+    if best_code is not None:
+        return best_code, best_key, None
+    return None, None, None
 
 
 def resolve_tip_doc(
@@ -170,22 +260,20 @@ def resolve_tip_doc(
 
     Returns (tip_doc, conflict_msg):
         tip_doc      – '01', '03', or None when unresolvable.
-        conflict_msg – human-readable explanation of a conflict or missing type,
-                       or None when resolution succeeded cleanly.
+        conflict_msg – human-readable explanation, or None on clean success.
 
     Resolution priority
     -------------------
-    1. Explicit ``tipo_comprobante`` column in the row (values must be 01/03).
-    2. Prefix match against ``config['serie_map']`` (exact first, then startswith).
-    3. Global ``config['tipo_documento']`` fallback **only** when ``serie_map``
-       is empty (backward-compat for single-type reports).
+    1. Explicit ``tipo_comprobante`` column in the row (must normalise to 01/03).
+    2. Deterministic match in ``config['serie_map']``:
+       exact normalised key first, then longest-prefix key.
+    Both sources must agree; a disagreement is a blocking conflict.
 
-    Blocking conditions
-    -------------------
-    * Explicit type is present but unrecognised → None + message.
-    * Explicit type and mapped type are BOTH resolved and disagree → None + message.
-    * ``serie_map`` is configured but no prefix matches and no explicit type → None + message.
-    * ``serie_map`` entry carries an invalid code → None + message.
+    There is NO global fallback to ``tipo_documento``.  When the type cannot
+    be determined, the row is unresolved and generation is blocked.
+
+    Call ``validate_serie_map`` once before processing multiple rows to catch
+    structural map errors without repeating the scan per row.
     """
     serie_map: Dict[str, str] = config.get('serie_map', {}) or {}
 
@@ -200,27 +288,17 @@ def resolve_tip_doc(
                 "Valores admitidos: 01 (Factura) o 03 (Boleta)."
             )
 
-    # 2. Series prefix map (exact match first, then startswith)
+    # 2. Serie map — deterministic (exact → longest prefix, order-independent)
     serie = normalize_serie(row.get('serie', ''))
-    mapped: Optional[str] = None
-    matched_prefix: Optional[str] = None
-    for prefix, code in serie_map.items():
-        p = str(prefix).upper()
-        if serie.upper() == p or serie.upper().startswith(p):
-            mapped = normalize_tip_doc_code(code)
-            matched_prefix = prefix
-            if mapped is None:
-                return None, (
-                    f"El mapeo de series define el código {code!r} para el prefijo "
-                    f"{prefix!r}, que no es un tipo de comprobante válido (use '01' o '03')."
-                )
-            break
+    mapped, matched_key, map_err = _match_serie_map(serie, serie_map)
+    if map_err:
+        return None, map_err
 
-    # Conflict: explicit and mapped both resolved but disagree
+    # Conflict: both sources resolved but disagree
     if explicit is not None and mapped is not None and explicit != mapped:
         return None, (
             f"Conflicto: la columna tipo_comprobante indica {explicit!r} pero el "
-            f"mapeo de serie {serie!r} (prefijo {matched_prefix!r}) indica {mapped!r}. "
+            f"mapeo de serie {serie!r} (clave {matched_key!r}) indica {mapped!r}. "
             "Corrija el reporte o ajuste 'serie_map' en la configuración."
         )
 
@@ -229,19 +307,13 @@ def resolve_tip_doc(
     if mapped is not None:
         return mapped, None
 
-    # serie_map configured but no prefix matched (and no explicit column)
+    # Unresolved — no global fallback
     if serie_map:
         return None, (
-            f"La serie {serie!r} no coincide con ningún prefijo del mapeo configurado. "
-            f"Prefijos registrados: {list(serie_map.keys())}. "
+            f"La serie {serie!r} no coincide con ninguna clave del mapeo configurado. "
+            f"Claves registradas: {sorted(serie_map.keys())}. "
             "Agregue una entrada en 'serie_map' o incluya la columna 'tipo_comprobante'."
         )
-
-    # 3. Global fallback — only when serie_map is empty
-    global_tipo = normalize_tip_doc_code(str(config.get('tipo_documento', '01')))
-    if global_tipo in ('01', '03'):
-        return global_tipo, None
-
     return None, (
         f"No se pudo determinar el tipo de comprobante para la serie {serie!r}. "
         "Configure 'serie_map' en la interfaz o en config.json, "
@@ -254,23 +326,38 @@ def resolve_tip_doc_for_df(
 ) -> Tuple[pd.Series, List[Dict[str, Any]]]:
     """Resolve document types for every row in a processed DataFrame.
 
+    Validates the serie_map structure once upfront before the per-row loop.
+
     Returns
     -------
     tip_doc_series : pd.Series
         '01', '03', or '' (unresolved) for each row.
     observations : list of dict
         One entry per unresolvable/conflicting row with keys:
-        fila, serie, documento, tipo ('CONFLICTO' or 'DESCONOCIDO'), mensaje.
+        fila, serie, documento, tipo ('CONFLICTO'/'DESCONOCIDO'/'ERROR_MAPA'), mensaje.
     """
+    serie_map: Dict[str, str] = config.get('serie_map', {}) or {}
+    map_error = validate_serie_map(serie_map)
+    if map_error:
+        obs = [
+            {
+                'fila': int(idx) + 1,
+                'serie': str(row.get('serie', '')),
+                'documento': str(row.get('documento', '')),
+                'tipo': 'ERROR_MAPA',
+                'mensaje': map_error,
+            }
+            for idx, row in df.iterrows()
+        ]
+        return pd.Series([''] * len(df), index=df.index, dtype=str), obs
+
     results: List[str] = []
     observations: List[Dict[str, Any]] = []
     for idx, row in df.iterrows():
         tip_doc, msg = resolve_tip_doc(row.to_dict(), config)
         if tip_doc is None:
             results.append('')
-            is_conflict = msg is not None and (
-                'Conflicto' in msg or 'conflicto' in msg
-            )
+            is_conflict = msg is not None and 'Conflicto' in msg
             observations.append({
                 'fila': int(idx) + 1,
                 'serie': str(row.get('serie', '')),
@@ -651,6 +738,11 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
     if processed_df.empty:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
+    # Validate serie_map structure once before building rows
+    serie_map_err = validate_serie_map(config.get('serie_map', {}) or {})
+    if serie_map_err:
+        raise ValueError(f"Error estructural en 'serie_map': {serie_map_err}")
+
     month_end = get_month_end(periodo)
     bank_order: List[str] = []
     seen: set[str] = set()
@@ -843,10 +935,10 @@ def create_validation_report(summary: Dict[str, Any], source_path: Path, output_
 
         tip_doc_summary = summary.get('tip_doc_summary', {})
         pd.DataFrame([
-            ['Facturas (01)', tip_doc_summary.get('01', 0)],
-            ['Boletas (03)', tip_doc_summary.get('03', 0)],
-            ['Sin resolver', tip_doc_summary.get('sin_resolver', 0)],
-        ], columns=['Tipo', 'Cantidad']).to_excel(writer, index=False, sheet_name='TipoDoc')
+            ['Facturas (01)', tip_doc_summary.get('01', 0), tip_doc_summary.get('importe_01', 0.0)],
+            ['Boletas (03)', tip_doc_summary.get('03', 0), tip_doc_summary.get('importe_03', 0.0)],
+            ['Sin resolver', tip_doc_summary.get('sin_resolver', 0), tip_doc_summary.get('importe_sin_resolver', 0.0)],
+        ], columns=['Tipo', 'Cantidad', 'Importe']).to_excel(writer, index=False, sheet_name='TipoDoc')
 
         tip_doc_rows_df = pd.DataFrame(summary.get('tip_doc_obs', []))
         if not tip_doc_rows_df.empty:
@@ -1086,16 +1178,17 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
 
     conciliacion = build_conciliacion(carga)
 
-    # TIP_DOC breakdown (from H-rows, which are the individual invoices/boletas)
-    h_rows = carga[carga['DEBE HABER'] == 'H']
-    tip_doc_vals = h_rows['TIP_DOC'].astype(str)
-    tip_doc_summary = {
-        '01': int((tip_doc_vals == '01').sum()),
-        '03': int((tip_doc_vals == '03').sum()),
-        'sin_resolver': int(((tip_doc_vals != '01') & (tip_doc_vals != '03')).sum()),
-    }
-    # Attach tip_doc to processed rows for the validation report
+    # TIP_DOC breakdown — counts and amounts from original processed rows only
     tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(processed, config)
+    ic = processed['importe_cancelado'] if 'importe_cancelado' in processed.columns else pd.Series([0.0] * len(processed), index=processed.index)
+    tip_doc_summary = {
+        '01': int((tip_doc_series == '01').sum()),
+        '03': int((tip_doc_series == '03').sum()),
+        'sin_resolver': int((tip_doc_series == '').sum()),
+        'importe_01': round(float(ic[tip_doc_series == '01'].sum()), 2),
+        'importe_03': round(float(ic[tip_doc_series == '03'].sum()), 2),
+        'importe_sin_resolver': round(float(ic[tip_doc_series == ''].sum()), 2),
+    }
     processed_display = processed.copy()
     processed_display['tip_doc_asignado'] = tip_doc_series
 
