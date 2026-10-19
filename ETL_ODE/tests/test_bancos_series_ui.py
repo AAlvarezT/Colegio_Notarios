@@ -161,6 +161,9 @@ class TestBCPNormalisation:
     def test_banco_credito_no_accent(self):
         assert normalize_bank_name('BANCO DE CREDITO DEL PERU') == 'BCP'
 
+    def test_alias_exacto_de_credito_del_peru(self):
+        assert normalize_bank_name('DE CREDITO DEL PERU') == 'BCP'
+
     def test_bcp_mixed_case(self):
         assert normalize_bank_name('bcp') == 'BCP'
 

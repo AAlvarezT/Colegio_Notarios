@@ -372,6 +372,10 @@ let analysisCompletedRevision = -1;  // revision of the last successful analysis
 // In-flight request controllers
 let activeAnalysisController = null;
 let activeGenerationController = null;
+let activeAnalysisRequestId = 0;
+let activeGenerationRequestId = 0;
+let nextAnalysisRequestId = 1;
+let nextGenerationRequestId = 1;
 
 // Object URLs for download links — revoked on invalidation
 let activeDownloadUrls = [];
@@ -408,7 +412,7 @@ function normaliseBankName(name) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   if (t.includes('INTERBANK')) return 'INTERBANK';
   if (t.includes('BBVA') || t.includes('CONTINENTAL')) return 'BBVA CONTINENTAL';
-  if (t === 'BCP' || t.includes('BANCO DE CREDITO')) return 'BCP';
+  if (t === 'BCP' || t.includes('BANCO DE CREDITO') || t.includes('DE CREDITO DEL PERU')) return 'BCP';
   if (t.includes('NACION')) return 'DE LA NACION';
   if (t.includes('OTROS')) return 'OTROS';
   return name.trim().replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
@@ -451,6 +455,17 @@ function invalidateAnalysis() {
   analysisValid = false;
   const notice = document.getElementById('stale-notice');
   if (notice) notice.style.display = 'block';
+}
+
+function clearSeriesEditor() {
+  const tbody = document.getElementById('series-table-body');
+  if (tbody) tbody.innerHTML = '';
+  const section = document.getElementById('series-section');
+  if (section) section.style.display = 'none';
+  const remap = document.getElementById('btn-remap');
+  if (remap) remap.disabled = true;
+  const hint = document.getElementById('remap-hint');
+  if (hint) hint.textContent = '';
 }
 
 // ============================================================
@@ -641,6 +656,9 @@ function applyConfig(cfg) {
 function setupListeners() {
   document.getElementById('file-reporte').addEventListener('change', e => {
     reporteFile = e.target.files[0] || null;
+    // Avoid syncing selectors from a previous report after file replacement.
+    analysisData = null;
+    clearSeriesEditor();
     document.getElementById('file-name').textContent = reporteFile ? reporteFile.name : '';
     document.getElementById('btn-analyze').disabled = !reporteFile;
     invalidateAnalysis();
@@ -698,6 +716,11 @@ function setupListeners() {
 
   // Export config
   document.getElementById('btn-export-config').addEventListener('click', () => {
+    // Keep exported config aligned with what is currently selected in the
+    // active report editor. collectSerieMap preserves unrelated mappings and
+    // ignores stale selectors when there is no active analysisData.
+    collectSerieMap();
+    updateRemapButton();
     const cfg = readConfig();
     const blob = new Blob([JSON.stringify(cfg, null, 2)], {type:'application/json'});
     const url  = URL.createObjectURL(blob);
@@ -762,6 +785,7 @@ function collectSerieMap() {
   // Sync from selectors — empty value = explicit removal for current-report series.
   document.querySelectorAll('.serie-type-select').forEach(sel => {
     const serie = sel.dataset.serie;
+    if (!currentSeries.has(serie)) return;
     if (sel.value) newMap[serie] = sel.value;
     // else: intentional omission — removes the mapping for this serie.
   });
@@ -774,12 +798,25 @@ function collectSerieMap() {
 async function doAnalyze() {
   if (!reporteFile) return;
 
-  // Cancel any in-flight analysis.
-  if (activeAnalysisController) { activeAnalysisController.abort(); activeAnalysisController = null; }
+  // Sync any pending selector changes into serieMap BEFORE building the request.
+  // Clicking "Analizar" directly (without "Guardar mapeo") must apply the
+  // displayed selections so the server receives what the user sees.
+  // collectSerieMap uses the current analysisData to distinguish current-report
+  // series (sync) from others (preserve their existing mapping).
+  collectSerieMap();
+
+  // Cancel any in-flight analysis BEFORE bumping revision.
+  if (activeAnalysisController) { activeAnalysisController.abort(); }
 
   // Bump revision unconditionally before any await.
   bumpRevision();
   const myRevision = inputRevision;
+  const myRequestId = nextAnalysisRequestId++;
+
+  // Create this request's own controller and register it as active.
+  const myController = new AbortController();
+  activeAnalysisController = myController;
+  activeAnalysisRequestId = myRequestId;
 
   const btn    = document.getElementById('btn-analyze');
   const status = document.getElementById('analyze-status');
@@ -797,9 +834,8 @@ async function doAnalyze() {
   fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
   fd.append('config_json',   JSON.stringify(readConfig()));
 
-  activeAnalysisController = new AbortController();
   try {
-    const res = await fetch('/api/analyze', {method:'POST', body:fd, signal:activeAnalysisController.signal});
+    const res = await fetch('/api/analyze', {method:'POST', body:fd, signal:myController.signal});
     if (inputRevision !== myRevision) return;   // stale — discard silently
     const data = await res.json();
     if (inputRevision !== myRevision) return;
@@ -820,10 +856,15 @@ async function doAnalyze() {
     if (err.name === 'AbortError') return;
     status.textContent = '&#10060; Error de conexion: ' + err.message;
   } finally {
-    activeAnalysisController = null;
-    // Always restore button so the user can retry.
-    btn.disabled = !reporteFile;
-    btn.textContent = 'Analizar archivos';
+    // Only clean up if THIS request is still the active one.
+    // A superseded request must not overwrite the new request's controller or
+    // restore the button while the newer request is still processing.
+    if (activeAnalysisController === myController && activeAnalysisRequestId === myRequestId) {
+      activeAnalysisController = null;
+      activeAnalysisRequestId = 0;
+      btn.disabled = !reporteFile;
+      btn.textContent = 'Analizar archivos';
+    }
   }
 }
 
@@ -937,16 +978,20 @@ function renderSeriesTable(seriesAll) {
 function updateRemapButton() {
   var selects = Array.from(document.querySelectorAll('.serie-type-select'));
   // Button is enabled when any selector differs from the current serieMap value.
-  var hasChanges = selects.some(function(sel) {
-    var mapVal = serieMap[sel.dataset.serie] || '';
-    return sel.value !== mapVal;
-  });
+  var hasChanges = hasPendingSerieSelections();
   document.getElementById('btn-remap').disabled = !hasChanges;
   var hint = document.getElementById('remap-hint');
   var unresolved = selects.filter(function(s) { return !s.value; });
   hint.textContent = hasChanges
     ? (unresolved.length ? (unresolved.length + ' serie(s) sin asignar.') : 'Cambios pendientes -- guarda el mapeo y re-analiza.')
     : '';
+}
+
+function hasPendingSerieSelections() {
+  return Array.from(document.querySelectorAll('.serie-type-select')).some(function(sel) {
+    var mapVal = serieMap[sel.dataset.serie] || '';
+    return sel.value !== mapVal;
+  });
 }
 
 function onSerieSelectChange() {
@@ -973,15 +1018,37 @@ function scrollTobanks(e) {
 // Generate
 // ============================================================
 async function doGenerate() {
-  if (!reporteFile || !analysisValid) return;
+  var status = document.getElementById('generate-status');
+  if (!reporteFile || !analysisValid) {
+    status.textContent = 'Las entradas cambiaron. Vuelve a analizar antes de generar.';
+    return;
+  }
 
-  // Cancel any in-flight generation.
-  if (activeGenerationController) { activeGenerationController.abort(); activeGenerationController = null; }
+  // Guard: the completed analysis must match the CURRENT input state exactly.
+  if (analysisCompletedRevision !== inputRevision) {
+    status.textContent = 'Las entradas cambiaron. Vuelve a analizar antes de generar.';
+    return;
+  }
+
+  // Guard: block if there are selector changes not yet applied to serieMap.
+  var pendingChanges = hasPendingSerieSelections();
+  if (pendingChanges) {
+    status.textContent = 'Las entradas cambiaron. Vuelve a analizar antes de generar.';
+    return;
+  }
+
+  // Cancel any in-flight generation BEFORE bumping state.
+  if (activeGenerationController) { activeGenerationController.abort(); }
 
   var myRevision = inputRevision;
+  var myRequestId = nextGenerationRequestId++;
+
+  // Create this request's own controller and register it as active.
+  var myController = new AbortController();
+  activeGenerationController = myController;
+  activeGenerationRequestId = myRequestId;
 
   var btn    = document.getElementById('btn-generate');
-  var status = document.getElementById('generate-status');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Generando...';
   status.textContent = '';
@@ -995,9 +1062,8 @@ async function doGenerate() {
   fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
   fd.append('config_json',   JSON.stringify(readConfig()));
 
-  activeGenerationController = new AbortController();
   try {
-    var res = await fetch('/api/generate', {method:'POST', body:fd, signal:activeGenerationController.signal});
+    var res = await fetch('/api/generate', {method:'POST', body:fd, signal:myController.signal});
     if (inputRevision !== myRevision) return;   // stale
     var data = await res.json();
     if (inputRevision !== myRevision) return;
@@ -1016,9 +1082,13 @@ async function doGenerate() {
     if (err.name === 'AbortError') return;
     status.textContent = '&#10060; Error de conexion: ' + err.message;
   } finally {
-    activeGenerationController = null;
-    btn.disabled = !analysisValid;
-    btn.textContent = 'Generar carga';
+    // Only clean up if THIS request is still the active one.
+    if (activeGenerationController === myController && activeGenerationRequestId === myRequestId) {
+      activeGenerationController = null;
+      activeGenerationRequestId = 0;
+      btn.disabled = !analysisValid;
+      btn.textContent = 'Generar carga';
+    }
   }
 }
 

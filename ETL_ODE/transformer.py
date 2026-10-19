@@ -127,8 +127,8 @@ def normalize_bank_name(value: Any) -> str:
         return 'INTERBANK'
     if 'BBVA' in text or 'CONTINENTAL' in text:
         return 'BBVA CONTINENTAL'
-    # BCP aliases: "BCP", "BANCO DE CREDITO", "BANCO DE CREDITO DEL PERU"
-    if text == 'BCP' or 'BANCO DE CREDITO' in text or ('BANCO' in text and 'CREDITO' in text):
+    # BCP aliases include exact "DE CREDITO DEL PERU" seen in real reports.
+    if text == 'BCP' or 'BANCO DE CREDITO' in text or 'DE CREDITO DEL PERU' in text or ('BANCO' in text and 'CREDITO' in text):
         return 'BCP'
     if 'NACION' in text:
         return 'DE LA NACION'
