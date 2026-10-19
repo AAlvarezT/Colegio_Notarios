@@ -360,11 +360,24 @@ let reporteFile = null;
 let modeloFile = null;
 let analysisValid = false;
 let analysisData = null;
-let serieMap = {};
+let serieMap = {};          // persists across analyses; synced by collectSerieMap
 let defaultConfig = null;
 
-// Sharon's confirmed defaults — centralised source of truth.
-// These initialise userBanks once; imports/edits override individual entries.
+// Revision counter — increments unconditionally on EVERY input change,
+// including during an in-flight request. Both analyze and generate capture
+// this at start and discard their response if the revision changes.
+let inputRevision = 0;
+let analysisCompletedRevision = -1;  // revision of the last successful analysis
+
+// In-flight request controllers
+let activeAnalysisController = null;
+let activeGenerationController = null;
+
+// Object URLs for download links — revoked on invalidation
+let activeDownloadUrls = [];
+
+// Sharon's confirmed defaults — single source of truth in the frontend.
+// schema_version:2 tells the server not to re-add deleted banks.
 const SHARON_DEFAULT_BANKS = {
   'INTERBANK':         { cuenta_contable: '10400006', medio_pago: '003' },
   'BBVA CONTINENTAL':  { cuenta_contable: '10400001', medio_pago: '003' },
@@ -373,7 +386,7 @@ const SHARON_DEFAULT_BANKS = {
   'OTROS':             { cuenta_contable: '10100001', medio_pago: '' },
 };
 
-// Mutable map — user edits, imports, and "Add bank" modify this.
+// Mutable map — user edits, imports, add-bank and delete-bank modify this.
 let userBanks = JSON.parse(JSON.stringify(SHARON_DEFAULT_BANKS));
 
 // ============================================================
@@ -389,17 +402,55 @@ function fmt(n) {
   return (typeof n === 'number' ? n : parseFloat(n) || 0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// Normalise a bank name consistently on the frontend (mirrors transformer.py logic).
+// Mirrors transformer.py normalize_bank_name
 function normaliseBankName(name) {
   const t = (name || '').toUpperCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // remove accents
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   if (t.includes('INTERBANK')) return 'INTERBANK';
   if (t.includes('BBVA') || t.includes('CONTINENTAL')) return 'BBVA CONTINENTAL';
   if (t === 'BCP' || t.includes('BANCO DE CREDITO')) return 'BCP';
   if (t.includes('NACION')) return 'DE LA NACION';
   if (t.includes('OTROS')) return 'OTROS';
-  // Title-case custom names
   return name.trim().replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
+function bankDomKey(name) {
+  return btoa(unescape(encodeURIComponent(name))).replace(/[^a-zA-Z0-9]/g,'_');
+}
+
+// ============================================================
+// Revision & download invalidation
+// ============================================================
+
+/** Increment revision always, hide stale downloads, disable generate. */
+function bumpRevision() {
+  inputRevision++;
+  clearDownloads();
+  document.getElementById('btn-generate').disabled = true;
+}
+
+/** Revoke object URLs and hide the downloads section. */
+function clearDownloads() {
+  activeDownloadUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+  activeDownloadUrls = [];
+  const sec = document.getElementById('section-downloads');
+  if (sec) sec.style.display = 'none';
+  const gstatus = document.getElementById('generate-status');
+  if (gstatus) gstatus.textContent = '';
+}
+
+/**
+ * Mark analysis stale and bump revision.
+ * Does NOT early-return when analysisValid is already false — the revision
+ * increment must happen even during an in-flight request so the response
+ * is discarded.
+ */
+function invalidateAnalysis() {
+  bumpRevision();
+  if (!analysisValid) return;   // UI cleanup only needed once
+  analysisValid = false;
+  const notice = document.getElementById('stale-notice');
+  if (notice) notice.style.display = 'block';
 }
 
 // ============================================================
@@ -428,11 +479,6 @@ async function loadDefaultConfig() {
 // ============================================================
 // Dynamic Banks Grid
 // ============================================================
-function bankDomKey(name) {
-  // Safe DOM id suffix — base64url-like encoding to avoid special characters.
-  return btoa(unescape(encodeURIComponent(name))).replace(/[^a-zA-Z0-9]/g,'_');
-}
-
 function buildBanksGrid() {
   const grid = document.getElementById('banks-grid');
   grid.innerHTML = '';
@@ -445,25 +491,29 @@ function buildBanksGrid() {
 function buildBankRow(name, cfg) {
   const key = bankDomKey(name);
   const isOtros = normaliseBankName(name) === 'OTROS';
+  const cuentaDisplay = cfg.cuenta_contable.trim();
   const div = document.createElement('div');
   div.id = `bank-row-${key}`;
   div.style.cssText = 'margin-bottom:0.75rem; padding:0.5rem 0.75rem; border-radius:6px; background:#f8fafc; border:1px solid var(--gray-border);';
+  if (!cuentaDisplay) div.style.borderColor = 'var(--red)';
   div.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.35rem;">
-      <p style="font-size:0.82rem; font-weight:700; color:#374151; margin:0;">${escHtml(name)}${isOtros ? ' <small style="font-weight:400; color:var(--gray);">(Caja)</small>' : ''}</p>
+      <p style="font-size:0.82rem; font-weight:700; color:#374151; margin:0;">${escHtml(name)}${isOtros?' <small style="font-weight:400;color:var(--gray);">(Caja)</small>':''}${!cuentaDisplay?' <span style="color:var(--red);font-size:0.75rem;">&#9888; cuenta vac&iacute;a</span>':''}</p>
       <div style="display:flex; gap:0.4rem;">
-        <button class="btn btn-outline btn-sm" data-action="edit-bank" data-bank="${escHtml(name)}" title="Editar">✏️</button>
-        ${!isOtros ? `<button class="btn btn-outline btn-sm" data-action="delete-bank" data-bank="${escHtml(name)}" title="Eliminar" style="color:var(--red); border-color:var(--red);">🗑</button>` : ''}
+        <button class="btn btn-outline btn-sm" data-action="edit-bank" data-bank="${escHtml(name)}" title="Editar">&#9999;&#65039;</button>
+        ${!isOtros?`<button class="btn btn-outline btn-sm" data-action="delete-bank" data-bank="${escHtml(name)}" title="Eliminar" style="color:var(--red);border-color:var(--red);">&#128465;</button>`:''}
       </div>
     </div>
     <div class="row" style="gap:0.5rem;" id="bank-view-${key}">
       <div class="col">
         <label style="font-size:0.75rem;">Cuenta contable</label>
-        <p style="font-size:0.88rem; font-weight:600; padding:0.35rem 0; margin:0; font-family:monospace;">${escHtml(cfg.cuenta_contable)}</p>
+        <p style="font-size:0.88rem;font-weight:600;padding:0.35rem 0;margin:0;font-family:monospace;${!cuentaDisplay?'color:var(--red);':''}">
+          ${cuentaDisplay ? escHtml(cfg.cuenta_contable) : '(vac&iacute;a &mdash; requerida)'}</p>
       </div>
       <div class="col">
         <label style="font-size:0.75rem;">Medio de pago</label>
-        <p style="font-size:0.88rem; font-weight:600; padding:0.35rem 0; margin:0; font-family:monospace;">${escHtml(cfg.medio_pago) || '<span style="color:var(--gray);">(vacío)</span>'}</p>
+        <p style="font-size:0.88rem;font-weight:600;padding:0.35rem 0;margin:0;font-family:monospace;">
+          ${escHtml(cfg.medio_pago)||'<span style="color:var(--gray);">(vac&iacute;o)</span>'}</p>
       </div>
     </div>
     <div id="bank-edit-${key}" style="display:none;">
@@ -473,11 +523,11 @@ function buildBankRow(name, cfg) {
           <input type="text" id="bank-cuenta-${key}" value="${escHtml(cfg.cuenta_contable)}" style="font-family:monospace;">
         </div>
         <div class="col">
-          <label style="font-size:0.75rem;">Medio de pago${isOtros ? ' <small style="font-weight:400;">(vacío para Caja)</small>' : ''}</label>
-          <input type="text" id="bank-medio-${key}" value="${escHtml(cfg.medio_pago)}" style="font-family:monospace;" placeholder="${isOtros ? '' : 'Ej: 003'}">
+          <label style="font-size:0.75rem;">Medio de pago${isOtros?' <small style="font-weight:400;">(vac&iacute;o=Caja)</small>':''}</label>
+          <input type="text" id="bank-medio-${key}" value="${escHtml(cfg.medio_pago)}" style="font-family:monospace;" placeholder="${isOtros?'':'Ej: 003'}">
         </div>
       </div>
-      <div style="display:flex; gap:0.4rem; margin-top:0.4rem;">
+      <div style="display:flex;gap:0.4rem;margin-top:0.4rem;">
         <button class="btn btn-primary btn-sm" data-action="save-bank" data-bank="${escHtml(name)}">Guardar</button>
         <button class="btn btn-outline btn-sm" data-action="cancel-edit-bank" data-bank="${escHtml(name)}">Cancelar</button>
       </div>
@@ -505,19 +555,17 @@ function handleBankAction(e) {
     document.getElementById(`bank-edit-${key}`).style.display = 'none';
   } else if (action === 'save-bank') {
     const cuenta = document.getElementById(`bank-cuenta-${key}`).value.trim();
-    const medio = document.getElementById(`bank-medio-${key}`).value.trim();
+    const medio  = document.getElementById(`bank-medio-${key}`).value.trim();
     userBanks[bankName] = { cuenta_contable: cuenta, medio_pago: medio };
     buildBanksGrid();
     invalidateAnalysis();
   } else if (action === 'delete-bank') {
-    // Check if bank was in the last analysis
-    const inReport = analysisData && analysisData.series_all
-      && (analysisData.preview || []).some(r => normaliseBankName(r.banco) === normaliseBankName(bankName));
-    if (inReport) {
-      if (!confirm(`El banco "${bankName}" aparece en el reporte actual. ¿Seguro que quieres eliminarlo? La generación quedará bloqueada hasta que lo vuelvas a configurar.`)) return;
-    } else {
-      if (!confirm(`¿Eliminar el banco "${bankName}"?`)) return;
-    }
+    const inReport = analysisData &&
+      (analysisData.preview || []).some(r => normaliseBankName(r.banco) === normaliseBankName(bankName));
+    const msg = inReport
+      ? `El banco "${bankName}" aparece en el reporte actual. Eliminarlo bloqueara el analisis y la generacion hasta que lo vuelvas a configurar. Continuar?`
+      : `Eliminar el banco "${bankName}"?`;
+    if (!confirm(msg)) return;
     delete userBanks[bankName];
     buildBanksGrid();
     invalidateAnalysis();
@@ -533,13 +581,14 @@ function readConfig() {
     bancos[name] = { cuenta_contable: cfg.cuenta_contable, medio_pago: cfg.medio_pago };
   });
   return {
+    schema_version: 2,
     cuenta_clientes: document.getElementById('cfg-cuenta-clientes').value.trim(),
-    sub_diario: document.getElementById('cfg-sub-diario').value.trim(),
-    tipo_anexo: document.getElementById('cfg-tipo-anexo').value.trim(),
-    moneda: document.getElementById('cfg-moneda').value.trim(),
+    sub_diario:      document.getElementById('cfg-sub-diario').value.trim(),
+    tipo_anexo:      document.getElementById('cfg-tipo-anexo').value.trim(),
+    moneda:          document.getElementById('cfg-moneda').value.trim(),
     tipo_conversion: document.getElementById('cfg-tipo-conversion').value.trim(),
-    doc_anulado: document.getElementById('cfg-doc-anulado').value.trim(),
-    glosa: document.getElementById('cfg-glosa').value.trim(),
+    doc_anulado:     document.getElementById('cfg-doc-anulado').value.trim(),
+    glosa:           document.getElementById('cfg-glosa').value.trim(),
     serie_map: serieMap,
     bancos,
   };
@@ -548,37 +597,42 @@ function readConfig() {
 function applyConfig(cfg) {
   if (!cfg) return;
   if (cfg.cuenta_clientes !== undefined) document.getElementById('cfg-cuenta-clientes').value = cfg.cuenta_clientes;
-  if (cfg.sub_diario !== undefined) document.getElementById('cfg-sub-diario').value = cfg.sub_diario;
-  if (cfg.tipo_anexo !== undefined) document.getElementById('cfg-tipo-anexo').value = cfg.tipo_anexo;
-  if (cfg.moneda !== undefined) document.getElementById('cfg-moneda').value = cfg.moneda;
+  if (cfg.sub_diario      !== undefined) document.getElementById('cfg-sub-diario').value      = cfg.sub_diario;
+  if (cfg.tipo_anexo      !== undefined) document.getElementById('cfg-tipo-anexo').value      = cfg.tipo_anexo;
+  if (cfg.moneda          !== undefined) document.getElementById('cfg-moneda').value          = cfg.moneda;
   if (cfg.tipo_conversion !== undefined) document.getElementById('cfg-tipo-conversion').value = cfg.tipo_conversion;
-  if (cfg.doc_anulado !== undefined) document.getElementById('cfg-doc-anulado').value = cfg.doc_anulado;
-  if (cfg.glosa !== undefined) document.getElementById('cfg-glosa').value = cfg.glosa;
-  if (cfg.serie_map && typeof cfg.serie_map === 'object') serieMap = cfg.serie_map;
+  if (cfg.doc_anulado     !== undefined) document.getElementById('cfg-doc-anulado').value     = cfg.doc_anulado;
+  if (cfg.glosa           !== undefined) document.getElementById('cfg-glosa').value           = cfg.glosa;
+  if (cfg.serie_map && typeof cfg.serie_map === 'object') serieMap = { ...cfg.serie_map };
+
   if (cfg.bancos && typeof cfg.bancos === 'object') {
-    // Merge: start from Sharon defaults, overlay imported banks (preserves BCP if not in old config).
-    userBanks = { ...SHARON_DEFAULT_BANKS };
-    Object.entries(cfg.bancos).forEach(([name, bc]) => {
-      if (bc && typeof bc === 'object') {
-        userBanks[name] = {
-          cuenta_contable: String(bc.cuenta_contable ?? ''),
-          medio_pago: String(bc.medio_pago ?? ''),
-        };
-      }
-    });
+    const schemaV = Number(cfg.schema_version || 1);
+    if (schemaV >= 2) {
+      // Authoritative: use exactly what is in the file.
+      userBanks = {};
+      Object.entries(cfg.bancos).forEach(([name, bc]) => {
+        if (bc && typeof bc === 'object') {
+          userBanks[name] = {
+            cuenta_contable: String(bc.cuenta_contable ?? ''),
+            medio_pago:      String(bc.medio_pago ?? ''),
+          };
+        }
+      });
+    } else {
+      // Old config (v1): start from Sharon defaults, overlay imported banks.
+      // This adds BCP if the old config lacked it.
+      userBanks = { ...SHARON_DEFAULT_BANKS };
+      Object.entries(cfg.bancos).forEach(([name, bc]) => {
+        if (bc && typeof bc === 'object') {
+          userBanks[name] = {
+            cuenta_contable: String(bc.cuenta_contable ?? ''),
+            medio_pago:      String(bc.medio_pago ?? ''),
+          };
+        }
+      });
+    }
     buildBanksGrid();
   }
-}
-
-// ============================================================
-// Invalidation
-// ============================================================
-function invalidateAnalysis() {
-  if (!analysisValid) return;
-  analysisValid = false;
-  document.getElementById('btn-generate').disabled = true;
-  const notice = document.getElementById('stale-notice');
-  if (notice) notice.style.display = 'block';
 }
 
 // ============================================================
@@ -599,7 +653,6 @@ function setupListeners() {
   ['inp-year','inp-month','inp-fecha-calculo'].forEach(id => {
     document.getElementById(id).addEventListener('change', invalidateAnalysis);
   });
-
   ['cfg-cuenta-clientes','cfg-sub-diario','cfg-tipo-anexo','cfg-moneda',
    'cfg-tipo-conversion','cfg-doc-anulado','cfg-glosa'].forEach(id => {
     document.getElementById(id).addEventListener('input', invalidateAnalysis);
@@ -616,16 +669,16 @@ function setupListeners() {
   });
   document.getElementById('btn-generate').addEventListener('click', doGenerate);
 
-  // Add-bank button
+  // Add-bank form
   document.getElementById('btn-add-bank').addEventListener('click', () => {
     document.getElementById('add-bank-form').style.display = 'block';
     document.getElementById('new-bank-nombre').focus();
   });
   document.getElementById('btn-cancel-add-bank').addEventListener('click', () => {
     document.getElementById('add-bank-form').style.display = 'none';
-    document.getElementById('new-bank-nombre').value = '';
-    document.getElementById('new-bank-cuenta').value = '';
-    document.getElementById('new-bank-medio').value = '';
+    ['new-bank-nombre','new-bank-cuenta','new-bank-medio'].forEach(
+      id => { document.getElementById(id).value = ''; }
+    );
   });
   document.getElementById('btn-confirm-add-bank').addEventListener('click', () => {
     const rawName = document.getElementById('new-bank-nombre').value.trim();
@@ -633,29 +686,29 @@ function setupListeners() {
     const normName = normaliseBankName(rawName);
     if (userBanks[normName]) { alert(`El banco "${normName}" ya existe.`); return; }
     const cuenta = document.getElementById('new-bank-cuenta').value.trim();
-    const medio = document.getElementById('new-bank-medio').value.trim();
+    const medio  = document.getElementById('new-bank-medio').value.trim();
     userBanks[normName] = { cuenta_contable: cuenta, medio_pago: medio };
     buildBanksGrid();
     invalidateAnalysis();
     document.getElementById('add-bank-form').style.display = 'none';
-    document.getElementById('new-bank-nombre').value = '';
-    document.getElementById('new-bank-cuenta').value = '';
-    document.getElementById('new-bank-medio').value = '';
+    ['new-bank-nombre','new-bank-cuenta','new-bank-medio'].forEach(
+      id => { document.getElementById(id).value = ''; }
+    );
   });
 
   // Export config
   document.getElementById('btn-export-config').addEventListener('click', () => {
     const cfg = readConfig();
     const blob = new Blob([JSON.stringify(cfg, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'config_ode.json'; a.click();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = 'config_ode.json'; a.click();
     URL.revokeObjectURL(url);
-    // Brief confirmation
     const btn = document.getElementById('btn-export-config');
     const orig = btn.textContent;
-    btn.textContent = '✅ Configuración descargada';
+    btn.textContent = 'Configuracion descargada. Guardala para reimportarla.';
     btn.disabled = true;
-    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 3000);
+    setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 4000);
   });
 
   // Import config
@@ -667,16 +720,16 @@ function setupListeners() {
     const fd = new FormData();
     fd.append('config_json', text);
     try {
-      const res = await fetch('/api/config/validate', {method:'POST', body:fd});
+      const res  = await fetch('/api/config/validate', {method:'POST', body:fd});
       const data = await res.json();
       if (res.ok) {
         applyConfig(JSON.parse(text));
         invalidateAnalysis();
-        alert('Configuración importada correctamente.\nGuárdala para volver a importarla cuando sea necesario.');
+        alert('Configuracion importada correctamente.\nGuardala para volver a importarla cuando sea necesario.');
       } else {
-        alert('Error en la configuración importada: ' + (data.detail || 'Inválida'));
+        alert('Error en la configuracion importada: ' + (data.detail || 'Invalida'));
       }
-    } catch { alert('No se pudo validar el archivo de configuración.'); }
+    } catch { alert('No se pudo validar el archivo de configuracion.'); }
     e.target.value = '';
   });
 
@@ -686,10 +739,33 @@ function setupListeners() {
   });
 }
 
+// ============================================================
+// Serie map — with deletion sync
+// ============================================================
+/**
+ * Synchronise serieMap from the current series table.
+ *
+ * - For series present in the current report: empty selector = explicit removal.
+ * - For series NOT in the current report: preserve existing mapping untouched.
+ * - Never promotes types detected via explicit column into saved map rules.
+ */
 function collectSerieMap() {
+  const currentSeries = new Set(
+    (analysisData ? analysisData.series_all || [] : []).map(s => s.serie)
+  );
+
+  const newMap = {};
+  // Keep mappings for series absent from the current report.
+  for (const [k, v] of Object.entries(serieMap)) {
+    if (!currentSeries.has(k)) newMap[k] = v;
+  }
+  // Sync from selectors — empty value = explicit removal for current-report series.
   document.querySelectorAll('.serie-type-select').forEach(sel => {
-    if (sel.value) serieMap[sel.dataset.serie] = sel.value;
+    const serie = sel.dataset.serie;
+    if (sel.value) newMap[serie] = sel.value;
+    // else: intentional omission — removes the mapping for this serie.
   });
+  serieMap = newMap;
 }
 
 // ============================================================
@@ -698,36 +774,54 @@ function collectSerieMap() {
 async function doAnalyze() {
   if (!reporteFile) return;
 
-  const btn = document.getElementById('btn-analyze');
+  // Cancel any in-flight analysis.
+  if (activeAnalysisController) { activeAnalysisController.abort(); activeAnalysisController = null; }
+
+  // Bump revision unconditionally before any await.
+  bumpRevision();
+  const myRevision = inputRevision;
+
+  const btn    = document.getElementById('btn-analyze');
   const status = document.getElementById('analyze-status');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Analizando...';
   status.textContent = '';
   document.getElementById('section-results').style.display = 'none';
-  document.getElementById('section-downloads').style.display = 'none';
   analysisValid = false;
-  document.getElementById('btn-generate').disabled = true;
 
   const fd = new FormData();
-  fd.append('reporte', reporteFile);
+  fd.append('reporte',       reporteFile);
   if (modeloFile) fd.append('modelo', modeloFile);
-  fd.append('year', document.getElementById('inp-year').value);
-  fd.append('month', document.getElementById('inp-month').value);
+  fd.append('year',          document.getElementById('inp-year').value);
+  fd.append('month',         document.getElementById('inp-month').value);
   fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
-  fd.append('config_json', JSON.stringify(readConfig()));
+  fd.append('config_json',   JSON.stringify(readConfig()));
 
+  activeAnalysisController = new AbortController();
   try {
-    const res = await fetch('/api/analyze', {method:'POST', body:fd});
+    const res = await fetch('/api/analyze', {method:'POST', body:fd, signal:activeAnalysisController.signal});
+    if (inputRevision !== myRevision) return;   // stale — discard silently
     const data = await res.json();
-    if (!res.ok) { status.textContent = '❌ ' + (data.detail || 'Error al analizar'); return; }
+    if (inputRevision !== myRevision) return;
+
+    if (!res.ok) { status.textContent = '&#10060; ' + (data.detail || 'Error al analizar'); return; }
+
     analysisData = data;
     renderResults(data);
-    analysisValid = data.errors.length === 0 && (!data.unconfigured_banks || data.unconfigured_banks.length === 0);
-    document.getElementById('btn-generate').disabled = !analysisValid;
+    const noBlocking = data.errors.length === 0 && !(data.unconfigured_banks && data.unconfigured_banks.length);
+    if (noBlocking) {
+      analysisValid = true;
+      analysisCompletedRevision = myRevision;
+      document.getElementById('btn-generate').disabled = false;
+    }
     status.textContent = '';
   } catch (err) {
-    status.textContent = '❌ Error de conexión: ' + err.message;
+    if (inputRevision !== myRevision) return;
+    if (err.name === 'AbortError') return;
+    status.textContent = '&#10060; Error de conexion: ' + err.message;
   } finally {
+    activeAnalysisController = null;
+    // Always restore button so the user can retry.
     btn.disabled = !reporteFile;
     btn.textContent = 'Analizar archivos';
   }
@@ -737,41 +831,36 @@ function renderResults(data) {
   document.getElementById('section-results').style.display = 'block';
   document.getElementById('stale-notice').style.display = 'none';
 
-  const hasErrors = (data.errors && data.errors.length > 0)
-    || (data.unconfigured_banks && data.unconfigured_banks.length > 0);
-  const badge = document.getElementById('result-badge');
-  badge.innerHTML = hasErrors
-    ? '<span class="badge badge-red">⛔ REVISAR</span>'
-    : '<span class="badge badge-green">✅ LISTO PARA GENERAR</span>';
+  const hasErrors = (data.errors && data.errors.length > 0) || (data.unconfigured_banks && data.unconfigured_banks.length > 0);
+  document.getElementById('result-badge').innerHTML = hasErrors
+    ? '<span class="badge badge-red">&#x26D4; REVISAR</span>'
+    : '<span class="badge badge-green">&#x2705; LISTO PARA GENERAR</span>';
 
   // Errors
-  const errList = document.getElementById('errors-list');
   if (data.errors && data.errors.length) {
-    errList.innerHTML = data.errors.map(e => `<li class="msg-list msg-error">${escHtml(e)}</li>`).join('');
+    document.getElementById('errors-list').innerHTML = data.errors.map(e => `<li class="msg-list msg-error">${escHtml(e)}</li>`).join('');
     document.getElementById('errors-block').style.display = 'block';
   } else { document.getElementById('errors-block').style.display = 'none'; }
 
   // Warnings
   if (data.warnings && data.warnings.length) {
-    document.getElementById('warnings-list').innerHTML = data.warnings.map(w => `<li class="msg-list msg-warn">⚠️ ${escHtml(w)}</li>`).join('');
+    document.getElementById('warnings-list').innerHTML = data.warnings.map(w => `<li class="msg-list msg-warn">&#9888;&#65039; ${escHtml(w)}</li>`).join('');
     document.getElementById('warnings-block').style.display = 'block';
   } else { document.getElementById('warnings-block').style.display = 'none'; }
 
   // Info
   if (data.info && data.info.length) {
-    document.getElementById('info-list').innerHTML = data.info.map(i => `<li class="msg-list msg-info">ℹ️ ${escHtml(i)}</li>`).join('');
+    document.getElementById('info-list').innerHTML = data.info.map(i => `<li class="msg-list msg-info">&#8505;&#65039; ${escHtml(i)}</li>`).join('');
     document.getElementById('info-block').style.display = 'block';
   } else { document.getElementById('info-block').style.display = 'none'; }
 
   // Type summary
   const ts = data.type_summary || {};
-  if (ts) {
-    document.getElementById('type-summary-text').innerHTML =
-      `<span class="tip-01">Facturas (01): ${ts.facturas} — S/ ${fmt(ts.importe_facturas)}</span> &nbsp;|&nbsp; ` +
-      `<span class="tip-03">Boletas (03): ${ts.boletas} — S/ ${fmt(ts.importe_boletas)}</span> &nbsp;|&nbsp; ` +
-      `<span class="tip-unresolved">Sin resolver: ${ts.sin_resolver} — S/ ${fmt(ts.importe_sin_resolver)}</span>`;
-    document.getElementById('type-summary-block').style.display = 'block';
-  }
+  document.getElementById('type-summary-text').innerHTML =
+    `<span class="tip-01">Facturas (01): ${ts.facturas} &mdash; S/ ${fmt(ts.importe_facturas)}</span> &nbsp;|&nbsp; ` +
+    `<span class="tip-03">Boletas (03): ${ts.boletas} &mdash; S/ ${fmt(ts.importe_boletas)}</span> &nbsp;|&nbsp; ` +
+    `<span class="tip-unresolved">Sin resolver: ${ts.sin_resolver} &mdash; S/ ${fmt(ts.importe_sin_resolver)}</span>`;
+  document.getElementById('type-summary-block').style.display = 'block';
 
   // Stats
   const st = data.stats || {};
@@ -785,15 +874,12 @@ function renderResults(data) {
       return `<tr><td>${escHtml(r.banco)}</td><td>${escHtml(r.serie)}</td><td>${escHtml(r.documento)}</td>
         <td style="text-align:right;">S/ ${fmt(r.importe)}</td>
         <td>${escHtml(r.fecha)}</td>
-        <td class="${cls}">${escHtml(r.tip_doc) || '—'}</td></tr>`;
+        <td class="${cls}">${escHtml(r.tip_doc)||'&mdash;'}</td></tr>`;
     }).join('');
     document.getElementById('preview-block').style.display = 'block';
   } else { document.getElementById('preview-block').style.display = 'none'; }
 
-  // Permanent series table — ALL series
   renderSeriesTable(data.series_all || []);
-
-  // Unconfigured banks
   renderUnconfiguredBanks(data.unconfigured_banks || []);
 }
 
@@ -805,52 +891,61 @@ function renderSeriesTable(seriesAll) {
   const tbody = document.getElementById('series-table-body');
   tbody.innerHTML = seriesAll.map(s => {
     const tipoLabel = s.tipos.length
-      ? s.tipos.map(t => t === '01' ? '<span class="tip-01">01 Factura</span>' : t === '03' ? '<span class="tip-03">03 Boleta</span>' : escHtml(t)).join(', ')
-      : '—';
+      ? s.tipos.map(t => t==='01'?'<span class="tip-01">01 Factura</span>':t==='03'?'<span class="tip-03">03 Boleta</span>':escHtml(t)).join(', ')
+      : '&mdash;';
 
-    let estadoBadge;
-    if (s.conflicto) {
-      estadoBadge = '<span class="badge badge-red">⚡ Conflicto</span>';
-    } else if (s.resuelto) {
-      estadoBadge = '<span class="badge badge-green">✅ Resuelto</span>';
-    } else {
-      estadoBadge = '<span class="badge badge-orange">⚠ Sin resolver</span>';
+    const estadoBadge = s.conflicto
+      ? '<span class="badge badge-red">Conflicto</span>'
+      : s.resuelto
+        ? '<span class="badge badge-green">Resuelto</span>'
+        : '<span class="badge badge-orange">Sin resolver</span>';
+
+    // fuente display with prefix note
+    var fuenteLabel = '<span style="font-size:0.75rem; color:var(--text-muted);">&mdash;</span>';
+    if (s.fuente === 'columna') {
+      fuenteLabel = '<span style="font-size:0.75rem; color:var(--gray);">columna</span>';
+    } else if (s.fuente === 'mapeo') {
+      var prefixNote = s.fuente_es_prefijo
+        ? ` <span title="Resuelta por prefijo \'${escHtml(s.fuente_clave)}\' del mapeo. Quitar esta asignacion exacta no elimina la regla de prefijo." style="cursor:help; color:var(--orange);">prefijo \'${escHtml(s.fuente_clave)}\'</span>`
+        : '';
+      fuenteLabel = '<span style="font-size:0.75rem; color:var(--gray);">mapeo' + prefixNote + '</span>';
     }
 
-    const fuenteLabel = s.fuente === 'columna' ? '<span style="font-size:0.75rem; color:var(--gray);">columna</span>'
-      : s.fuente === 'mapeo' ? '<span style="font-size:0.75rem; color:var(--gray);">mapeo</span>'
-      : '<span style="font-size:0.75rem; color:var(--text-muted);">—</span>';
+    // Pre-fill dropdown from serieMap ONLY.
+    // Column-detected types are NOT promoted into map rules just by rendering.
+    var mappedVal = serieMap[s.serie] || '';
+    var sel = '<select class="serie-type-select" data-serie="' + escHtml(s.serie) + '" onchange="onSerieSelectChange()" style="font-size:0.82rem; padding:0.3rem;">' +
+      '<option value=""' + (!mappedVal?' selected':'') + '>-- Sin asignar --</option>' +
+      '<option value="01"' + (mappedVal==='01'?' selected':'') + '>01 -- Factura</option>' +
+      '<option value="03"' + (mappedVal==='03'?' selected':'') + '>03 -- Boleta</option>' +
+      '</select>';
 
-    // Pre-fill edit select from serieMap or from resolved type
-    const currentVal = serieMap[s.serie] || (s.tipos.length === 1 ? s.tipos[0] : '');
-    const sel = `<select class="serie-type-select" data-serie="${escHtml(s.serie)}" onchange="onSerieSelectChange()" style="font-size:0.82rem; padding:0.3rem;">
-      <option value="">— Sin asignar —</option>
-      <option value="01" ${currentVal==='01'?'selected':''}>01 — Factura</option>
-      <option value="03" ${currentVal==='03'?'selected':''}>03 — Boleta</option>
-    </select>`;
-
-    return `<tr>
-      <td style="font-family:monospace; font-weight:600;">${escHtml(s.serie)}</td>
-      <td>${tipoLabel}</td>
-      <td style="text-align:right;">${s.conteo}</td>
-      <td style="text-align:right;">S/ ${fmt(s.importe)}</td>
-      <td>${fuenteLabel}</td>
-      <td>${sel}</td>
-      <td>${estadoBadge}</td>
-    </tr>`;
+    return '<tr>' +
+      '<td style="font-family:monospace; font-weight:600;">' + escHtml(s.serie) + '</td>' +
+      '<td>' + tipoLabel + '</td>' +
+      '<td style="text-align:right;">' + s.conteo + '</td>' +
+      '<td style="text-align:right;">S/ ' + fmt(s.importe) + '</td>' +
+      '<td>' + fuenteLabel + '</td>' +
+      '<td>' + sel + '</td>' +
+      '<td>' + estadoBadge + '</td>' +
+      '</tr>';
   }).join('');
 
   updateRemapButton();
 }
 
 function updateRemapButton() {
-  const selects = document.querySelectorAll('.serie-type-select');
-  const hasChanges = Array.from(selects).some(s => s.value !== '');
+  var selects = Array.from(document.querySelectorAll('.serie-type-select'));
+  // Button is enabled when any selector differs from the current serieMap value.
+  var hasChanges = selects.some(function(sel) {
+    var mapVal = serieMap[sel.dataset.serie] || '';
+    return sel.value !== mapVal;
+  });
   document.getElementById('btn-remap').disabled = !hasChanges;
-  const hint = document.getElementById('remap-hint');
-  const unresolved = Array.from(selects).filter(s => s.value === '');
-  hint.textContent = unresolved.length
-    ? `${unresolved.length} serie(s) sin asignar — no es obligatorio resolver todas antes de generar si el reporte trae tipos explícitos.`
+  var hint = document.getElementById('remap-hint');
+  var unresolved = selects.filter(function(s) { return !s.value; });
+  hint.textContent = hasChanges
+    ? (unresolved.length ? (unresolved.length + ' serie(s) sin asignar.') : 'Cambios pendientes -- guarda el mapeo y re-analiza.')
     : '';
 }
 
@@ -860,12 +955,12 @@ function onSerieSelectChange() {
 }
 
 function renderUnconfiguredBanks(banks) {
-  const block = document.getElementById('unconfigured-banks-block');
+  var block = document.getElementById('unconfigured-banks-block');
   if (!banks || !banks.length) { block.style.display = 'none'; return; }
   block.style.display = 'block';
-  document.getElementById('unconfigured-banks-list').innerHTML = banks.map(
-    b => `<li>${escHtml(b)} — <a href="#" onclick="scrollTobanks(event)">Configúralo en la sección Bancos ↑</a></li>`
-  ).join('');
+  document.getElementById('unconfigured-banks-list').innerHTML = banks.map(function(b) {
+    return '<li>' + escHtml(b) + ' &mdash; <a href="#" onclick="scrollTobanks(event)">Configuralo en la seccion Bancos</a></li>';
+  }).join('');
 }
 
 function scrollTobanks(e) {
@@ -880,101 +975,108 @@ function scrollTobanks(e) {
 async function doGenerate() {
   if (!reporteFile || !analysisValid) return;
 
-  const btn = document.getElementById('btn-generate');
-  const status = document.getElementById('generate-status');
+  // Cancel any in-flight generation.
+  if (activeGenerationController) { activeGenerationController.abort(); activeGenerationController = null; }
+
+  var myRevision = inputRevision;
+
+  var btn    = document.getElementById('btn-generate');
+  var status = document.getElementById('generate-status');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Generando...';
   status.textContent = '';
-  document.getElementById('section-downloads').style.display = 'none';
+  clearDownloads();
 
-  const fd = new FormData();
-  fd.append('reporte', reporteFile);
+  var fd = new FormData();
+  fd.append('reporte',       reporteFile);
   if (modeloFile) fd.append('modelo', modeloFile);
-  fd.append('year', document.getElementById('inp-year').value);
-  fd.append('month', document.getElementById('inp-month').value);
+  fd.append('year',          document.getElementById('inp-year').value);
+  fd.append('month',         document.getElementById('inp-month').value);
   fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
-  fd.append('config_json', JSON.stringify(readConfig()));
+  fd.append('config_json',   JSON.stringify(readConfig()));
 
+  activeGenerationController = new AbortController();
   try {
-    const res = await fetch('/api/generate', {method:'POST', body:fd});
-    const data = await res.json();
+    var res = await fetch('/api/generate', {method:'POST', body:fd, signal:activeGenerationController.signal});
+    if (inputRevision !== myRevision) return;   // stale
+    var data = await res.json();
+    if (inputRevision !== myRevision) return;
+
     if (!res.ok) {
-      status.textContent = '❌ ' + (data.detail || 'Error al generar');
-      btn.disabled = false;
-      btn.textContent = 'Generar carga';
+      status.textContent = '&#10060; ' + (data.detail || 'Error al generar');
       return;
     }
     renderDownloads(data);
-    const summ = data.summary || {};
+    var summ = data.summary || {};
     status.textContent = summ.resultado === 'CUADRADO'
-      ? `✅ ${summ.resultado} — Diferencia: S/ ${fmt(summ.diferencia || 0)}`
-      : `⚠️ ${summ.resultado} — Diferencia: S/ ${fmt(summ.diferencia || 0)}`;
+      ? 'CUADRADO -- Diferencia: S/ ' + fmt(summ.diferencia || 0)
+      : 'REVISAR -- Diferencia: S/ ' + fmt(summ.diferencia || 0);
   } catch (err) {
-    status.textContent = '❌ Error de conexión: ' + err.message;
+    if (inputRevision !== myRevision) return;
+    if (err.name === 'AbortError') return;
+    status.textContent = '&#10060; Error de conexion: ' + err.message;
   } finally {
+    activeGenerationController = null;
     btn.disabled = !analysisValid;
     btn.textContent = 'Generar carga';
   }
 }
 
 function renderDownloads(data) {
-  const section = document.getElementById('section-downloads');
-  const body = document.getElementById('downloads-body');
+  var section = document.getElementById('section-downloads');
+  var body    = document.getElementById('downloads-body');
   if (!data.files || !data.files.length) { section.style.display = 'none'; return; }
 
-  const summ = data.summary || {};
+  var summ = data.summary || {};
   body.innerHTML = '';
 
   if (summ.resultado) {
-    const cls = summ.resultado === 'CUADRADO' ? 'badge-green' : 'badge-orange';
-    body.innerHTML += `<div style="margin-bottom:0.85rem;">
-      <span class="badge ${cls}" style="font-size:0.9rem;">${escHtml(summ.resultado)}</span>
-      <span style="font-size:0.85rem; color:var(--gray); margin-left:0.6rem;">
-        Diferencia: S/ ${fmt(summ.diferencia||0)} | Procesados: ${summ.cantidad_procesada||0} | Total: S/ ${fmt(summ.total_procesado||0)}
-      </span>
-    </div>`;
+    var cls = summ.resultado === 'CUADRADO' ? 'badge-green' : 'badge-orange';
+    body.innerHTML += '<div style="margin-bottom:0.85rem;">' +
+      '<span class="badge ' + cls + '" style="font-size:0.9rem;">' + escHtml(summ.resultado) + '</span>' +
+      '<span style="font-size:0.85rem; color:var(--gray); margin-left:0.6rem;">' +
+      'Diferencia: S/ ' + fmt(summ.diferencia||0) + ' | Procesados: ' + (summ.cantidad_procesada||0) + ' | Total: S/ ' + fmt(summ.total_procesado||0) +
+      '</span></div>';
   }
 
-  data.files.forEach((f, i) => {
-    const isPrimary = i === 0;
-    const bytes = Uint8Array.from(atob(f.data), c => c.charCodeAt(0));
-    const blob = new Blob([bytes], {type: f.mime});
-    const url = URL.createObjectURL(blob);
-    const note = isPrimary
-      ? '<br><small>⬅ <strong>Este es el archivo para la macro del estudio</strong></small>'
-      : (i === 2 ? '<br><small style="color:var(--orange);">Solo para revisión interna. No cargarlo en la macro.</small>' : '');
-    body.innerHTML += `
-      <div class="dl-card ${isPrimary ? 'primary-dl' : ''}">
-        <div class="dl-icon">${isPrimary ? '🟢' : (i===1?'📄':'📋')}</div>
-        <div class="dl-info">
-          <strong>${escHtml(f.label)}</strong>
-          <span style="font-size:0.82rem; color:var(--gray);">${escHtml(f.name)}</span>${note}
-        </div>
-        <a href="${url}" download="${escHtml(f.name)}" class="btn ${isPrimary?'btn-success':'btn-outline'} btn-sm">Descargar</a>
-      </div>`;
+  data.files.forEach(function(f, i) {
+    var isPrimary = i === 0;
+    var bytes = Uint8Array.from(atob(f.data), function(c) { return c.charCodeAt(0); });
+    var blob  = new Blob([bytes], {type: f.mime});
+    var url   = URL.createObjectURL(blob);
+    activeDownloadUrls.push(url);
+    var note = isPrimary
+      ? '<br><small>&#8592; <strong>Este es el archivo para la macro del estudio</strong></small>'
+      : (i === 2 ? '<br><small style="color:var(--orange);">Solo para revision interna. No cargarlo en la macro.</small>' : '');
+    body.innerHTML += '<div class="dl-card ' + (isPrimary?'primary-dl':'') + '">' +
+      '<div class="dl-icon">' + (isPrimary?'&#128994;':(i===1?'&#128196;':'&#128203;')) + '</div>' +
+      '<div class="dl-info"><strong>' + escHtml(f.label) + '</strong>' +
+      '<span style="font-size:0.82rem; color:var(--gray);">' + escHtml(f.name) + '</span>' + note + '</div>' +
+      '<a href="' + url + '" download="' + escHtml(f.name) + '" class="btn ' + (isPrimary?'btn-success':'btn-outline') + ' btn-sm">Descargar</a>' +
+      '</div>';
   });
 
   if (summ.conciliacion && summ.conciliacion.length) {
-    body.innerHTML += `<hr class="sep"><p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliación:</p>
-      <div style="overflow-x:auto;"><table class="concil-table"><thead><tr>
-        <th>Banco</th><th>Comprobante</th><th>Cantidad</th><th>Débito</th><th>Crédito</th><th>Diferencia</th><th>Estado</th>
-      </tr></thead><tbody>` +
-      summ.conciliacion.map(r => {
-        const isTotal = r.banco === 'TOTAL';
-        const estBadge = r.estado === 'CUADRADO'
+    body.innerHTML += '<hr class="sep"><p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliacion:</p>' +
+      '<div style="overflow-x:auto;"><table class="concil-table"><thead><tr>' +
+      '<th>Banco</th><th>Comprobante</th><th>Cantidad</th><th>Debito</th><th>Credito</th><th>Diferencia</th><th>Estado</th>' +
+      '</tr></thead><tbody>' +
+      summ.conciliacion.map(function(r) {
+        var isTotal = r.banco === 'TOTAL';
+        var estBadge = r.estado === 'CUADRADO'
           ? '<span class="badge badge-green">CUADRADO</span>'
           : '<span class="badge badge-orange">REVISAR</span>';
-        return `<tr class="${isTotal?'concil-total':''}">
-          <td>${escHtml(r.banco)}</td><td>${escHtml(r.comprobante)}</td><td>${r.cantidad}</td>
-          <td>S/ ${fmt(r.debito)}</td><td>S/ ${fmt(r.credito)}</td>
-          <td>S/ ${fmt(r.diferencia)}</td><td>${estBadge}</td>
-        </tr>`;
+        return '<tr class="' + (isTotal?'concil-total':'') + '">' +
+          '<td>' + escHtml(r.banco) + '</td><td>' + escHtml(r.comprobante) + '</td><td>' + r.cantidad + '</td>' +
+          '<td>S/ ' + fmt(r.debito) + '</td><td>S/ ' + fmt(r.credito) + '</td>' +
+          '<td>S/ ' + fmt(r.diferencia) + '</td><td>' + estBadge + '</td></tr>';
       }).join('') +
-    '</tbody></table></div>';
+      '</tbody></table></div>';
   }
 
   section.style.display = 'block';
 }
 </script>
+
 </body>
 </html>

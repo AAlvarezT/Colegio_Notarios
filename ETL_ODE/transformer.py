@@ -647,20 +647,53 @@ def migrate_legacy_otros_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
-def get_unconfigured_banks(processed_df: pd.DataFrame, config: Dict[str, Any]) -> List[str]:
-    """Return banks that appear in the report but have no entry in config['bancos'].
+def validate_bank_cfg(bank_name: str, bank_cfg: Any) -> Optional[str]:
+    """Validate a single bank configuration entry.
 
-    OTROS is always treated as cash (Caja) and never blocked.
-    Only truly missing banks (no cuenta_contable configured) are returned.
+    Returns an error string if invalid, else None.
+    Rules:
+    - bank_cfg must be a dict.
+    - 'cuenta_contable' must be a non-empty string (after stripping whitespace).
+      Exception: OTROS cash account is expected to have a non-empty cuenta_contable.
+    - 'medio_pago' must be a string (empty string is valid for OTROS/Caja).
+    - No other types (None, list, int) are accepted.
+    """
+    if not isinstance(bank_cfg, dict):
+        return f"Banco '{bank_name}': la configuración debe ser un objeto JSON, no {type(bank_cfg).__name__!r}."
+    for field in ('cuenta_contable', 'medio_pago'):
+        if field not in bank_cfg:
+            return f"Banco '{bank_name}': falta el campo '{field}'."
+        val = bank_cfg[field]
+        if val is None or isinstance(val, (list, dict, bool)):
+            return f"Banco '{bank_name}': '{field}' debe ser texto, no {type(val).__name__!r}."
+        if not isinstance(val, str):
+            return f"Banco '{bank_name}': '{field}' debe ser texto, no {type(val).__name__!r}."
+    cuenta = str(bank_cfg.get('cuenta_contable', '')).strip()
+    if not cuenta:
+        return f"Banco '{bank_name}': 'cuenta_contable' está vacío. Ingresa la cuenta contable."
+    return None
+
+
+def get_unconfigured_banks(processed_df: pd.DataFrame, config: Dict[str, Any]) -> List[str]:
+    """Return banks in the report that are absent or have an invalid/empty cuenta_contable.
+
+    Checks both name presence AND that cuenta_contable is a non-empty string.
+    OTROS is always treated as Caja; it still requires a valid cuenta_contable.
     """
     if 'banco' not in processed_df.columns:
         return []
-    configured = set(config.get('bancos', {}).keys())
-    report_banks = {
+    bancos_cfg = config.get('bancos', {})
+    report_banks = sorted({
         b for b in processed_df['banco'].astype(str).str.strip().unique()
         if b and b.lower() not in ('', 'nan')
-    }
-    return sorted(report_banks - configured)
+    })
+    unconfigured = []
+    for bank in report_banks:
+        bank_cfg = bancos_cfg.get(bank)
+        err = validate_bank_cfg(bank, bank_cfg) if bank_cfg is not None else None
+        if bank_cfg is None or err is not None:
+            unconfigured.append(bank)
+    return unconfigured
 
 
 def auto_create_bank_config(config: Dict[str, Any], nombre_banco: str) -> Dict[str, Any]:
@@ -689,11 +722,18 @@ def load_config(path: str | Path | None = None) -> Dict[str, Any]:
     with open(config_path, 'r', encoding='utf-8') as fh:
         loaded = json.load(fh)
     loaded = migrate_legacy_otros_config(loaded)
+    schema_version = int(loaded.get('schema_version', 1))
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     merged.update(loaded)
-    # Normalize bank name keys so they match report names (both go through normalize_bank_name)
     user_bancos = normalize_bancos_keys(loaded.get('bancos', {}))
-    merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
+    if schema_version >= 2:
+        # Authoritative: use exactly what's on disk, only normalize keys.
+        merged['bancos'] = user_bancos
+    else:
+        # Old format: migrate by adding any missing confirmed banks.
+        merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
+    # Always write schema_version=2 so future loads are authoritative.
+    merged['schema_version'] = 2
     return merged
 
 
@@ -773,8 +813,13 @@ def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calcu
 
     # --- Unconfigured banks (blocking) ---
     if config is not None and 'banco' in df.columns:
-        effective_bancos = {**DEFAULT_CONFIG, **(config or {})}
-        effective_bancos['bancos'] = {**DEFAULT_CONFIG['bancos'], **config.get('bancos', {})}
+        schema_version = int(config.get('schema_version', 1))
+        effective_bancos: Dict[str, Any] = {**DEFAULT_CONFIG, **(config or {})}
+        user_bancos = normalize_bancos_keys(config.get('bancos', {}))
+        if schema_version >= 2:
+            effective_bancos['bancos'] = user_bancos
+        else:
+            effective_bancos['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
         unconfigured = get_unconfigured_banks(df, effective_bancos)
         for bank in unconfigured:
             count = int((df['banco'].astype(str) == bank).sum())
@@ -812,10 +857,15 @@ def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calcu
 
 
 def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict[str, Any], fecha_calculo: str = 'fecha_cancelacion', model_path: Optional[str | Path] = None) -> pd.DataFrame:
+    schema_version = int((config or {}).get('schema_version', 1))
     config = {**DEFAULT_CONFIG, **(config or {})}
-    # Normalize all bank name keys so they match report bank names consistently
     user_bancos = normalize_bancos_keys(config.get('bancos', {}))
-    config['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
+    if schema_version >= 2:
+        # Authoritative config: do not re-add banks deleted by the user.
+        config['bancos'] = user_bancos
+    else:
+        # Old / migrating config: fill missing banks from defaults.
+        config['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
     if model_path:
         validate_model_structure(model_path, OUTPUT_COLUMNS)
 

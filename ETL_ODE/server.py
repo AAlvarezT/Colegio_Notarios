@@ -40,6 +40,7 @@ from transformer import (  # noqa: E402
     read_raw_ode_report,
     resolve_tip_doc_for_df,
     split_ode_rows,
+    validate_bank_cfg,
     validate_report,
     validate_serie_map,
 )
@@ -181,15 +182,22 @@ def _build_config(config_json: str) -> Dict[str, Any]:
         user_cfg = json.loads(config_json) if config_json.strip() else {}
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f'config_json inválido: {exc}')
-    # Merge: DEFAULT_CONFIG provides base values; user config overrides.
-    # bancos merges: DEFAULT_CONFIG provides BCP and other confirmed banks;
-    # user config overrides individual banks and may add custom ones.
-    # tipo_documento from old configs is silently ignored during resolution.
+    if not isinstance(user_cfg, dict):
+        raise HTTPException(status_code=422, detail='config_json debe ser un objeto JSON.')
+
+    schema_version = int(user_cfg.get('schema_version', 1))
     merged: Dict[str, Any] = {**DEFAULT_CONFIG, **user_cfg}
-    # Normalize all bank name keys to match report bank names
     user_bancos = normalize_bancos_keys(user_cfg.get('bancos', {}))
-    merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
+
+    if schema_version >= 2:
+        # Current config is authoritative: do not re-add banks deleted by the user.
+        merged['bancos'] = user_bancos
+    else:
+        # Old / migrating config: add any missing confirmed banks from DEFAULT_CONFIG.
+        merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
+
     merged.pop('tipo_documento', None)
+    merged['schema_version'] = schema_version
     return merged
 
 
@@ -274,16 +282,29 @@ def _build_analyze_response(
             resuelto = bool(tipos and all(t in ('01', '03') for t in tipos))
             conflicto = bool(len(tipos) > 1)
 
-            # Determine source of resolution
+            # Determine source of resolution and which map key matched
             fuente = ''
+            fuente_clave = ''
             if resuelto or conflicto:
                 serie_rows = processed[mask]
                 if has_explicit_col and serie_rows['tipo_comprobante'].astype(str).str.strip().ne('').any():
                     fuente = 'columna'
                 else:
                     s_upper = serie.strip().upper()
-                    if any(s_upper == k.strip().upper() or s_upper.startswith(k.strip().upper()) for k in serie_map):
+                    # Find best matching key (exact > longest prefix)
+                    exact_key = next((k for k in serie_map if s_upper == k.strip().upper()), None)
+                    if exact_key:
                         fuente = 'mapeo'
+                        fuente_clave = exact_key
+                    else:
+                        prefix_key = max(
+                            (k for k in serie_map if s_upper.startswith(k.strip().upper())),
+                            key=lambda k: len(k),
+                            default=None,
+                        )
+                        if prefix_key:
+                            fuente = 'mapeo'
+                            fuente_clave = prefix_key
 
             conteo = int(mask.sum())
             importe_serie = round(float(ic_series[mask].sum()), 2)
@@ -294,6 +315,8 @@ def _build_analyze_response(
                 'resuelto': resuelto,
                 'conflicto': conflicto,
                 'fuente': fuente,
+                'fuente_clave': fuente_clave,
+                'fuente_es_prefijo': bool(fuente == 'mapeo' and fuente_clave and fuente_clave.strip().upper() != serie.strip().upper()),
                 'conteo': conteo,
                 'importe': importe_serie,
             })
@@ -425,7 +448,6 @@ async def config_validate(request: Request, config_json: str = Form(...)):
     serie_map = cfg.get('serie_map', {})
     if not isinstance(serie_map, dict):
         raise HTTPException(status_code=422, detail="'serie_map' debe ser un objeto JSON.")
-
     err = validate_serie_map(serie_map)
     if err:
         raise HTTPException(status_code=422, detail=err)
@@ -435,19 +457,14 @@ async def config_validate(request: Request, config_json: str = Form(...)):
         if field not in cfg:
             raise HTTPException(status_code=422, detail=f'Campo requerido faltante: {field}')
 
-    # Validate bancos structure if provided
+    # Validate bancos structure — use shared validate_bank_cfg for consistency
     bancos = cfg.get('bancos', {})
     if not isinstance(bancos, dict):
         raise HTTPException(status_code=422, detail="'bancos' debe ser un objeto JSON.")
     for bank_name, bank_cfg in bancos.items():
-        if not isinstance(bank_cfg, dict):
-            raise HTTPException(status_code=422, detail=f"Configuración del banco '{bank_name}' debe ser un objeto JSON.")
-        if 'cuenta_contable' not in bank_cfg:
-            raise HTTPException(status_code=422, detail=f"Banco '{bank_name}': falta 'cuenta_contable'.")
-        if not isinstance(bank_cfg['cuenta_contable'], str):
-            raise HTTPException(status_code=422, detail=f"Banco '{bank_name}': 'cuenta_contable' debe ser texto.")
-        if 'medio_pago' not in bank_cfg:
-            raise HTTPException(status_code=422, detail=f"Banco '{bank_name}': falta 'medio_pago'.")
+        bank_err = validate_bank_cfg(bank_name, bank_cfg)
+        if bank_err:
+            raise HTTPException(status_code=422, detail=bank_err)
 
     return JSONResponse({'ok': True, 'message': 'Configuración válida'})
 
