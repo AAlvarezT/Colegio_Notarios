@@ -33,6 +33,9 @@ from transformer import (  # noqa: E402
     ensure_no_nan,
     export_carga_workbook,
     export_carga_xls,
+    get_unconfigured_banks,
+    normalize_bank_name,
+    normalize_bancos_keys,
     process_report,
     read_raw_ode_report,
     resolve_tip_doc_for_df,
@@ -178,8 +181,15 @@ def _build_config(config_json: str) -> Dict[str, Any]:
         user_cfg = json.loads(config_json) if config_json.strip() else {}
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f'config_json inválido: {exc}')
+    # Merge: DEFAULT_CONFIG provides base values; user config overrides.
+    # bancos merges: DEFAULT_CONFIG provides BCP and other confirmed banks;
+    # user config overrides individual banks and may add custom ones.
+    # tipo_documento from old configs is silently ignored during resolution.
     merged: Dict[str, Any] = {**DEFAULT_CONFIG, **user_cfg}
-    merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_cfg.get('bancos', {})}
+    # Normalize all bank name keys to match report bank names
+    user_bancos = normalize_bancos_keys(user_cfg.get('bancos', {}))
+    merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
+    merged.pop('tipo_documento', None)
     return merged
 
 
@@ -248,18 +258,50 @@ def _build_analyze_response(
         'importe_sin_resolver': round(float(ic[tip_doc_series == ''].sum()), 2),
     }
 
-    # Series summary
+    # Series summary — ALL series with count, amount, source, and resolution status
     series_all: List[Dict[str, Any]] = []
     unresolved_series: List[str] = []
+    serie_map = config.get('serie_map', {}) or {}
+    has_explicit_col = 'tipo_comprobante' in processed.columns
     if 'serie' in processed.columns:
+        ic_series = processed['importe_cancelado'] if 'importe_cancelado' in processed.columns else pd.Series(
+            [0.0] * len(processed), index=processed.index
+        )
         for serie in sorted(processed['serie'].astype(str).unique()):
             mask = processed['serie'].astype(str) == serie
             tipos_raw = list(tip_doc_series[mask].unique())
             tipos = [t for t in tipos_raw if t]
             resuelto = bool(tipos and all(t in ('01', '03') for t in tipos))
-            series_all.append({'serie': serie, 'tipos': tipos, 'resuelto': resuelto})
+            conflicto = bool(len(tipos) > 1)
+
+            # Determine source of resolution
+            fuente = ''
+            if resuelto or conflicto:
+                serie_rows = processed[mask]
+                if has_explicit_col and serie_rows['tipo_comprobante'].astype(str).str.strip().ne('').any():
+                    fuente = 'columna'
+                else:
+                    s_upper = serie.strip().upper()
+                    if any(s_upper == k.strip().upper() or s_upper.startswith(k.strip().upper()) for k in serie_map):
+                        fuente = 'mapeo'
+
+            conteo = int(mask.sum())
+            importe_serie = round(float(ic_series[mask].sum()), 2)
+
+            series_all.append({
+                'serie': serie,
+                'tipos': tipos,
+                'resuelto': resuelto,
+                'conflicto': conflicto,
+                'fuente': fuente,
+                'conteo': conteo,
+                'importe': importe_serie,
+            })
             if not resuelto:
                 unresolved_series.append(serie)
+
+    # Unconfigured banks
+    unconfigured_banks = get_unconfigured_banks(processed, config)
 
     # Observations (no server paths)
     obs_clean = [
@@ -292,6 +334,7 @@ def _build_analyze_response(
         'type_summary': type_summary,
         'series_all': series_all,
         'unresolved_series': unresolved_series,
+        'unconfigured_banks': unconfigured_banks,
         'tip_doc_obs': obs_clean,
         'stats': stats,
     }
@@ -376,6 +419,9 @@ async def config_validate(request: Request, config_json: str = Form(...)):
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail=f'JSON inválido: {exc}')
 
+    if not isinstance(cfg, dict):
+        raise HTTPException(status_code=422, detail='La configuración debe ser un objeto JSON.')
+
     serie_map = cfg.get('serie_map', {})
     if not isinstance(serie_map, dict):
         raise HTTPException(status_code=422, detail="'serie_map' debe ser un objeto JSON.")
@@ -388,6 +434,20 @@ async def config_validate(request: Request, config_json: str = Form(...)):
     for field in required:
         if field not in cfg:
             raise HTTPException(status_code=422, detail=f'Campo requerido faltante: {field}')
+
+    # Validate bancos structure if provided
+    bancos = cfg.get('bancos', {})
+    if not isinstance(bancos, dict):
+        raise HTTPException(status_code=422, detail="'bancos' debe ser un objeto JSON.")
+    for bank_name, bank_cfg in bancos.items():
+        if not isinstance(bank_cfg, dict):
+            raise HTTPException(status_code=422, detail=f"Configuración del banco '{bank_name}' debe ser un objeto JSON.")
+        if 'cuenta_contable' not in bank_cfg:
+            raise HTTPException(status_code=422, detail=f"Banco '{bank_name}': falta 'cuenta_contable'.")
+        if not isinstance(bank_cfg['cuenta_contable'], str):
+            raise HTTPException(status_code=422, detail=f"Banco '{bank_name}': 'cuenta_contable' debe ser texto.")
+        if 'medio_pago' not in bank_cfg:
+            raise HTTPException(status_code=422, detail=f"Banco '{bank_name}': falta 'medio_pago'.")
 
     return JSONResponse({'ok': True, 'message': 'Configuración válida'})
 
@@ -475,6 +535,20 @@ async def generate(
             if modelo_bytes:
                 modelo_path = tmp / (Path(modelo.filename or 'modelo.xlsx').name)
                 modelo_path.write_bytes(modelo_bytes)
+
+            # Server-side bank validation before generating
+            raw_pre = read_raw_ode_report(reporte_path)
+            _, _, processed_pre = split_ode_rows(raw_pre)
+            unconfigured = get_unconfigured_banks(processed_pre, config)
+            if unconfigured:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Bancos sin configurar: {', '.join(unconfigured)}. "
+                        "Configure la cuenta contable y el medio de pago de cada banco "
+                        "antes de generar la carga."
+                    ),
+                )
 
             out_dir = tmp / 'salida'
             out_dir.mkdir()

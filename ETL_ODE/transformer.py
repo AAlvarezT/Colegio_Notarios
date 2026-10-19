@@ -19,34 +19,43 @@ OUTPUT_COLUMNS = [
     'DOC_ANULADO', 'DEBE HABER', 'MEDIO_PAGO', 'NRO_FILE'
 ]
 
-BANK_PRIORITY = ['INTERBANK', 'BBVA CONTINENTAL', 'DE LA NACION', 'OTROS']
+BANK_PRIORITY = ['INTERBANK', 'BBVA CONTINENTAL', 'BCP', 'DE LA NACION', 'OTROS']
 LEGACY_OTROS_CFG = {'cuenta_contable': '10100011', 'medio_pago': '008'}
 OTROS_CASH_CFG = {'cuenta_contable': '10100001', 'medio_pago': ''}
+
+# Valores confirmados por Sharon — fuente de verdad centralizada.
+# All codes kept as strings to preserve leading zeros.
 DEFAULT_CONFIG = {
     'cuenta_clientes': '12120001',
-    'sub_diario': '01',
+    'sub_diario': '07',
     'tipo_anexo': '02',
-    'tipo_documento': '01',
     'serie_map': {},
     'moneda': 'MN',
     'tipo_conversion': 'VTA',
     'doc_anulado': '0',
     'glosa': 'COBRANZA DEL MES',
-    'fecha_documento': 'fecha_cancelacion',
     'bancos': {
-        'INTERBANK': {'cuenta_contable': '10100011', 'medio_pago': '008'},
-        'BBVA CONTINENTAL': {'cuenta_contable': '10100011', 'medio_pago': '008'},
-        'DE LA NACION': {'cuenta_contable': '10100011', 'medio_pago': '008'},
-        'OTROS': {'cuenta_contable': '10100001', 'medio_pago': ''},
+        'INTERBANK':        {'cuenta_contable': '10400006', 'medio_pago': '003'},
+        'BBVA CONTINENTAL': {'cuenta_contable': '10400001', 'medio_pago': '003'},
+        'BCP':              {'cuenta_contable': '10400011', 'medio_pago': '003'},
+        'DE LA NACION':     {'cuenta_contable': '10710001', 'medio_pago': '003'},
+        'OTROS':            {'cuenta_contable': '10100001', 'medio_pago': ''},
     },
 }
 
 
 def get_bank_default_config(bank_name: str) -> Dict[str, str]:
+    """Return the DEFAULT_CONFIG entry for a known bank, or an empty placeholder.
+
+    Only OTROS has a meaningful default (cash account, no payment method).
+    For all other banks, presence in config['bancos'] is the authoritative source.
+    Unknown banks must be configured explicitly — never invent account numbers.
+    """
     norm = normalize_bank_name(bank_name)
-    if norm == 'OTROS':
-        return {'cuenta_contable': '10100001', 'medio_pago': ''}
-    return {'cuenta_contable': '10100011', 'medio_pago': '008'}
+    if norm in DEFAULT_CONFIG['bancos']:
+        return dict(DEFAULT_CONFIG['bancos'][norm])
+    # Unknown bank: return an empty placeholder — caller must configure it.
+    return {'cuenta_contable': '', 'medio_pago': ''}
 
 
 def get_app_dir() -> Path:
@@ -118,11 +127,24 @@ def normalize_bank_name(value: Any) -> str:
         return 'INTERBANK'
     if 'BBVA' in text or 'CONTINENTAL' in text:
         return 'BBVA CONTINENTAL'
+    # BCP aliases: "BCP", "BANCO DE CREDITO", "BANCO DE CREDITO DEL PERU"
+    if text == 'BCP' or 'BANCO DE CREDITO' in text or ('BANCO' in text and 'CREDITO' in text):
+        return 'BCP'
     if 'NACION' in text:
         return 'DE LA NACION'
     if 'OTROS' in text:
         return 'OTROS'
     return text.title()
+
+
+def normalize_bancos_keys(bancos: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a new dict with all bank name keys normalised via normalize_bank_name.
+
+    Call whenever merging user-supplied bank configs so that key comparisons
+    against report bank names (which are always normalised) are consistent.
+    Example: {'SCOTIABANK': {...}} → {'Scotiabank': {...}}
+    """
+    return {normalize_bank_name(k): v for k, v in bancos.items() if k}
 
 
 def normalize_serie(value: Any) -> str:
@@ -625,15 +647,35 @@ def migrate_legacy_otros_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def get_unconfigured_banks(processed_df: pd.DataFrame, config: Dict[str, Any]) -> List[str]:
+    """Return banks that appear in the report but have no entry in config['bancos'].
+
+    OTROS is always treated as cash (Caja) and never blocked.
+    Only truly missing banks (no cuenta_contable configured) are returned.
+    """
+    if 'banco' not in processed_df.columns:
+        return []
+    configured = set(config.get('bancos', {}).keys())
+    report_banks = {
+        b for b in processed_df['banco'].astype(str).str.strip().unique()
+        if b and b.lower() not in ('', 'nan')
+    }
+    return sorted(report_banks - configured)
+
+
 def auto_create_bank_config(config: Dict[str, Any], nombre_banco: str) -> Dict[str, Any]:
+    """Look up an existing bank config entry.  Does NOT create new entries silently.
+
+    Returns the configured entry, or an empty placeholder if the bank is unknown.
+    Callers must check that the returned dict has a non-empty 'cuenta_contable'
+    before generating output.
+    """
     config = config or {'bancos': {}}
     config.setdefault('bancos', {})
     bank_name = normalize_bank_name(nombre_banco)
     if not bank_name:
-        return get_bank_default_config('')
-    if bank_name not in config['bancos']:
-        config['bancos'][bank_name] = get_bank_default_config(bank_name)
-    return config['bancos'][bank_name]
+        return {'cuenta_contable': '', 'medio_pago': ''}
+    return config['bancos'].get(bank_name, {'cuenta_contable': '', 'medio_pago': ''})
 
 
 def load_config(path: str | Path | None = None) -> Dict[str, Any]:
@@ -649,7 +691,9 @@ def load_config(path: str | Path | None = None) -> Dict[str, Any]:
     loaded = migrate_legacy_otros_config(loaded)
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     merged.update(loaded)
-    merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **loaded.get('bancos', {})}
+    # Normalize bank name keys so they match report names (both go through normalize_bank_name)
+    user_bancos = normalize_bancos_keys(loaded.get('bancos', {}))
+    merged['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
     return merged
 
 
@@ -727,15 +771,40 @@ def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calcu
     if 'banco' in df.columns and 'OTROS' in df['banco'].astype(str).unique():
         warnings.append('Los movimientos OTROS se registrarán como cobros en efectivo/Caja con la cuenta 10100001 y sin medio de pago.')
 
-    # --- TIP_DOC resolution (requires config to be supplied) ---
+    # --- Unconfigured banks (blocking) ---
+    if config is not None and 'banco' in df.columns:
+        effective_bancos = {**DEFAULT_CONFIG, **(config or {})}
+        effective_bancos['bancos'] = {**DEFAULT_CONFIG['bancos'], **config.get('bancos', {})}
+        unconfigured = get_unconfigured_banks(df, effective_bancos)
+        for bank in unconfigured:
+            count = int((df['banco'].astype(str) == bank).sum())
+            errors.append(
+                f"El banco '{bank}' aparece en {count} fila(s) pero no tiene cuenta contable "
+                "ni medio de pago configurados. Configúralo antes de generar."
+            )
+
+    # --- TIP_DOC resolution — errors grouped by serie (requires config) ---
     if config is not None:
         effective_cfg = {**DEFAULT_CONFIG, **(config or {})}
         _, tip_doc_obs = resolve_tip_doc_for_df(df, effective_cfg)
+        # Group observations by serie to avoid 141 identical messages
+        by_serie: Dict[str, list] = {}
         for obs in tip_doc_obs:
-            errors.append(
-                f"Fila {obs['fila']} (serie={obs['serie']!r}, "
-                f"doc={obs['documento']!r}): {obs['mensaje']}"
-            )
+            by_serie.setdefault(obs.get('serie', ''), []).append(obs)
+        for serie, obs_list in sorted(by_serie.items()):
+            count = len(obs_list)
+            ejemplos = ', '.join(o['documento'] for o in obs_list[:3])
+            base_msg = obs_list[0]['mensaje']
+            if count == 1:
+                obs = obs_list[0]
+                errors.append(
+                    f"Serie '{serie}' — doc {obs['documento']!r}: {base_msg}"
+                )
+            else:
+                errors.append(
+                    f"Serie '{serie}': {count} comprobante(s) sin tipo resuelto "
+                    f"(ej: {ejemplos}). {base_msg}"
+                )
 
     if not errors:
         info.append('Archivo legible y con estructura válida.')
@@ -744,7 +813,9 @@ def validate_report(df: pd.DataFrame, periodo: Optional[str] = None, fecha_calcu
 
 def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict[str, Any], fecha_calculo: str = 'fecha_cancelacion', model_path: Optional[str | Path] = None) -> pd.DataFrame:
     config = {**DEFAULT_CONFIG, **(config or {})}
-    config['bancos'] = {**DEFAULT_CONFIG['bancos'], **config.get('bancos', {})}
+    # Normalize all bank name keys so they match report bank names consistently
+    user_bancos = normalize_bancos_keys(config.get('bancos', {}))
+    config['bancos'] = {**DEFAULT_CONFIG['bancos'], **user_bancos}
     if model_path:
         validate_model_structure(model_path, OUTPUT_COLUMNS)
 
@@ -771,14 +842,25 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
         bank_rows = processed_df[processed_df['banco'].astype(str) == bank].copy()
         if bank_rows.empty:
             continue
-        bank_cfg = config['bancos'].get(bank, get_bank_default_config(bank))
+        bank_cfg = config['bancos'].get(bank)
+        if bank_cfg is None:
+            raise ValueError(
+                f"El banco '{bank}' no tiene cuenta contable ni medio de pago configurados. "
+                "Configúralo en la sección Bancos antes de generar la carga."
+            )
+        cuenta = str(bank_cfg.get('cuenta_contable', '')).strip()
+        if not cuenta:
+            raise ValueError(
+                f"El banco '{bank}' tiene cuenta contable vacía. "
+                "Completa la configuración antes de generar."
+            )
         comprobante = f'{comprobante_index:04d}'
 
         # D-row: bank summary — document-identity fields must be blank per accounting model
         rows.append({
-            'CTA_CONTABLE': str(bank_cfg.get('cuenta_contable', get_bank_default_config(bank)['cuenta_contable'])),
+            'CTA_CONTABLE': cuenta,
             'ANO_MES': str(periodo),
-            'SUB_DIARIO': str(config.get('sub_diario', '01')),
+            'SUB_DIARIO': str(config.get('sub_diario', '07')),
             'COMPROBANTE': comprobante,
             'FEC_DOC': month_end,
             'TIP_ANEXO': '',
@@ -827,7 +909,7 @@ def build_carga_dataframe(processed_df: pd.DataFrame, periodo: str, config: Dict
             rows.append({
                 'CTA_CONTABLE': str(config.get('cuenta_clientes', '12120001')),
                 'ANO_MES': str(periodo),
-                'SUB_DIARIO': str(config.get('sub_diario', '01')),
+                'SUB_DIARIO': str(config.get('sub_diario', '07')),
                 'COMPROBANTE': comprobante,
                 'FEC_DOC': doc_date,
                 'TIP_ANEXO': str(config.get('tipo_anexo', '02')),
@@ -1152,12 +1234,6 @@ def process_report(source_path: str | Path, output_dir: str | Path, config: Opti
     errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo, config=config)
     if errors:
         raise ValueError('Se encontraron errores bloqueantes:\n- ' + '\n- '.join(errors))
-
-    for idx in processed.index:
-        if pd.isna(processed.at[idx, 'banco']) or str(processed.at[idx, 'banco']).strip() == '':
-            raise ValueError(f'Banco vacío en la fila {idx + 1}. No se puede inferir el medio de cobranza.')
-        normalized = normalize_bank_name(processed.at[idx, 'banco'])
-        auto_create_bank_config(config, normalized)
 
     carga = build_carga_dataframe(processed, periodo, config, fecha_calculo=fecha_calculo, model_path=model_path)
     carga = ensure_no_nan(carga)
