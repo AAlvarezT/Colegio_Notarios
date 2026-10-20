@@ -230,15 +230,14 @@ class ConversorODEApp(tk.Tk):
         frm.pack(fill='x', pady=(0, 10))
         self.config_entries: dict[str, tk.Entry] = {}
         for label, key in [
-            ('Cuenta clientes', 'cuenta_clientes'),
-            ('Sub diario',      'sub_diario'),
-            ('Tipo anexo',      'tipo_anexo'),
-            ('Tipo doc (respaldo global)', 'tipo_documento'),
-            ('Moneda',          'moneda'),
-            ('Tipo conversión', 'tipo_conversion'),
-            ('Doc. anulado',    'doc_anulado'),
-            ('Glosa',           'glosa'),
-        ]:
+                ('Cuenta clientes', 'cuenta_clientes'),
+                ('Sub diario',      'sub_diario'),
+                ('Tipo anexo',      'tipo_anexo'),
+                ('Moneda',          'moneda'),
+                ('Tipo conversión', 'tipo_conversion'),
+                ('Doc. anulado',    'doc_anulado'),
+                ('Glosa',           'glosa'),
+            ]:
             row = tk.Frame(frm, bg=_BG_WHITE)
             row.pack(fill='x', pady=2)
             tk.Label(row, text=label, bg=_BG_WHITE, fg='#0d2140',
@@ -251,7 +250,7 @@ class ConversorODEApp(tk.Tk):
         self.bank_frame = self._section('Bancos')
         self.bank_frame.pack(fill='x', pady=(0, 10))
         self.bank_entries: dict[str, dict] = {}
-        for name in ['INTERBANK', 'BBVA CONTINENTAL', 'DE LA NACION', 'OTROS']:
+        for name in ['INTERBANK', 'BBVA CONTINENTAL', 'BCP', 'DE LA NACION', 'OTROS']:
             self._add_bank_row(name)
 
     def _build_preview_section(self) -> None:
