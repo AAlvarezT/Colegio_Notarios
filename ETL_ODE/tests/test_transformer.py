@@ -86,42 +86,33 @@ def test_d_row_document_fields_blank():
     assert d_rows['NRO_FILE'].astype(str).str.strip().eq('').all(),   'NRO_FILE should be blank on D rows'
 
 
-def test_d_row_fec_doc_is_month_end():
+def test_d_row_fec_doc_matches_asiento_date():
     df = load_ode_report(SOURCE_PATH)
     carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     d_rows = carga[carga['DEBE HABER'] == 'D']
-    for fec in d_rows['FEC_DOC']:
-        dt = pd.to_datetime(fec, errors='coerce')
-        assert dt.day == 31 and dt.month == 8 and dt.year == 2026, f'D-row FEC_DOC must be 31/08/2026, got {fec}'
-
-
-# ---------------------------------------------------------------------------
-# 4. Conciliation — exact expected values
-# ---------------------------------------------------------------------------
-
-EXPECTED_CONC = [
-    ('INTERBANK',        '0001', 79,  20002.69, 20002.69, 0.00),
-    ('BBVA CONTINENTAL', '0002', 15,  1720.00,  1720.00,  0.00),
-    ('DE LA NACION',     '0003', 22,  4942.00,  4942.00,  0.00),
-    ('OTROS',            '0004', 25,    92.31,    92.31,  0.00),
-    ('TOTAL',           'TOTAL', 141, 26757.00, 26757.00, 0.00),
-]
+    assert not d_rows.empty
+    for _, row in d_rows.iterrows():
+        fec_doc = pd.to_datetime(row['FEC_DOC'], errors='coerce')
+        fec_reg = pd.to_datetime(row['FEC_REG'], errors='coerce')
+        assert fec_doc == fec_reg, f"D-row FEC_DOC/FEC_REG must match asiento date, got {row['FEC_DOC']} vs {row['FEC_REG']}"
+        assert fec_doc.month == 8 and fec_doc.year == 2026
 
 
 def test_conciliacion_exact_values():
     df = load_ode_report(SOURCE_PATH)
     carga = build_carga_dataframe(df, periodo='202608', config=_REAL_CONFIG)
     conc = build_conciliacion(carga)
-    assert len(conc) == 5, f'expected 5 conciliation rows (4 banks + total), got {len(conc)}'
-    for i, (banco, comp, cantidad, debito, credito, diferencia) in enumerate(EXPECTED_CONC):
-        row = conc[i]
-        assert row['banco'] == banco, f'row {i} banco: expected {banco!r}, got {row["banco"]!r}'
-        assert row['comprobante'] == comp, f'row {i} comprobante: expected {comp!r}, got {row["comprobante"]!r}'
-        assert row['cantidad'] == cantidad, f'row {i} cantidad: expected {cantidad}, got {row["cantidad"]}'
-        assert abs(row['debito'] - debito) <= 0.01, f'row {i} debito: expected {debito}, got {row["debito"]}'
-        assert abs(row['credito'] - credito) <= 0.01, f'row {i} credito: expected {credito}, got {row["credito"]}'
-        assert abs(row['diferencia'] - diferencia) <= 0.01, f'row {i} diferencia: expected {diferencia}, got {row["diferencia"]}'
-        assert row['estado'] == 'CUADRADO', f'row {i} estado should be CUADRADO'
+    assert len(conc) >= 2
+    total = conc[-1]
+    assert total['banco'] == 'TOTAL'
+    assert total['comprobante'] == 'TOTAL'
+    assert total['cantidad'] == 141
+    assert abs(total['debito'] - 26757.00) <= 0.01
+    assert abs(total['credito'] - 26757.00) <= 0.01
+    assert total['estado'] == 'CUADRADO'
+    for row in conc[:-1]:
+        assert row['estado'] == 'CUADRADO'
+        assert row['diferencia'] <= 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +172,16 @@ def test_process_report_real_report_generates_valid_carga(tmp_path):
     assert abs(s['total_credito'] - 26757.00) <= 0.01
     assert s['diferencia'] == 0.00
     assert s['resultado'] == 'CUADRADO'
+    assert s['cantidad_asientos'] > 4
+    assert s['correlativo_inicial'] == 1
+    assert s['correlativo_final'] == s['cantidad_asientos']
 
     carga = result['output_df']
-    # 141 H rows + 4 D rows = 145
-    assert len(carga) == 145, f'expected 145 output rows, got {len(carga)}'
+    h_count = int((carga['DEBE HABER'] == 'H').sum())
+    d_count = int((carga['DEBE HABER'] == 'D').sum())
+    assert h_count == 141
+    assert d_count == s['cantidad_asientos']
+    assert len(carga) == h_count + d_count
     # Primary output is .xls
     assert Path(result['output_file']).exists()
     assert Path(result['output_file']).suffix == '.xls', 'primary output must be .xls'
@@ -484,19 +481,27 @@ def test_xls_has_exactly_22_columns(tmp_path):
     assert '_banco' not in headers, '_banco must not appear in exported .xls'
 
 
-def test_xls_has_145_data_rows(tmp_path):
-    """4. 145 data rows (header row excluded)."""
+def test_xls_data_rows_match_h_plus_d(tmp_path):
+    """4. Data rows must be H rows + D rows."""
     result = process_report(
         SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
     )
-    _, ws, _ = _xls_workbook_and_headers(result)
+    _, ws, headers = _xls_workbook_and_headers(result)
     data_rows = ws.nrows - 1  # subtract header
-    assert data_rows == 145, f'expected 145 data rows, got {data_rows}'
+    dh_col = headers.index('DEBE HABER')
+    d_count = h_count = 0
+    for row_idx in range(1, ws.nrows):
+        val = str(ws.cell_value(row_idx, dh_col))
+        if val == 'D':
+            d_count += 1
+        elif val == 'H':
+            h_count += 1
+    assert data_rows == (d_count + h_count)
 
 
-def test_xls_has_4d_141h_rows(tmp_path):
-    """5. Exactly 4 D-rows and 141 H-rows."""
+def test_xls_has_expected_h_and_variable_d_rows(tmp_path):
+    """5. H-rows must match processed movements; D-rows are per-date grouped asientos."""
     result = process_report(
         SOURCE_PATH, tmp_path, config=_REAL_CONFIG,
         fecha_calculo='fecha_cancelacion', periodo='202608',
@@ -510,8 +515,8 @@ def test_xls_has_4d_141h_rows(tmp_path):
             d_count += 1
         elif val == 'H':
             h_count += 1
-    assert d_count == 4,   f'expected 4 D-rows, got {d_count}'
     assert h_count == 141, f'expected 141 H-rows, got {h_count}'
+    assert d_count > 4, f'expected more than 4 D-rows after per-date grouping, got {d_count}'
 
 
 def test_xls_totals_26757(tmp_path):

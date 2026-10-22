@@ -32,16 +32,16 @@ def _make_xlsx_bytes(with_tipo_col: bool = True) -> bytes:
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco']
+    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco']
     if with_tipo_col:
         cols.append('Tipo Comprobante')
     ws.append(cols)
     rows = [
-        ('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), 'INTERBANK', '01'),
-        ('20222222222', 'BE01', '0000002',  50.0, datetime(2026, 8, 11), 'INTERBANK', '03'),
+        ('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK', '01'),
+        ('20222222222', 'BE01', '0000002',  50.0, datetime(2026, 8, 11), datetime(2026, 8, 11), 'INTERBANK', '03'),
     ]
     for r in rows:
-        ws.append(r[:6] + ((r[6],) if with_tipo_col else ()))
+        ws.append(r[:7] + ((r[7],) if with_tipo_col else ()))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -53,8 +53,8 @@ def _make_xlsx_with_unknown_serie(serie: str = 'ZZ99') -> bytes:
     from datetime import datetime
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco'])
-    ws.append(('20111111111', serie, '0000001', 100.0, datetime(2026, 8, 10), 'INTERBANK'))
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco'])
+    ws.append(('20111111111', serie, '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK'))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -66,8 +66,8 @@ def _make_xlsx_with_conflict() -> bytes:
     from datetime import datetime
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
-    ws.append(('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), 'INTERBANK', '01'))
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
+    ws.append(('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK', '01'))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -460,4 +460,3 @@ with patch.object(Path, 'mkdir', guarded_mkdir):
     assert 'IMPORTS_OK' in result.stdout, (
         f"Expected IMPORTS_OK in stdout:\n{result.stdout}\n{result.stderr}"
     )
-

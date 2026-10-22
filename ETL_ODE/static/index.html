@@ -135,12 +135,16 @@
           </select>
         </div>
         <div class="col">
-          <label>Criterio de fecha</label>
-          <select id="inp-fecha-calculo">
-            <option value="fecha_cancelacion">Fecha cancelación</option>
-            <option value="fecha_emi">Fecha emisión</option>
-            <option value="ultimo_dia_mes">Último día del mes</option>
-          </select>
+          <label>Fecha cobro desde</label>
+          <input type="date" id="inp-fecha-desde">
+        </div>
+        <div class="col">
+          <label>Fecha cobro hasta</label>
+          <input type="date" id="inp-fecha-hasta">
+        </div>
+        <div class="col">
+          <label>Correlativo inicial</label>
+          <input type="number" id="inp-correlativo-inicial" value="1" min="1" step="1">
         </div>
       </div>
     </div>
@@ -271,7 +275,7 @@
             <table id="preview-table">
               <thead><tr>
                 <th>Banco</th><th>Serie</th><th>Documento</th>
-                <th>Importe</th><th>Fecha</th><th>TIP_DOC</th>
+                <th>Importe</th><th>Fecha cobro</th><th>TIP_DOC</th>
               </tr></thead>
               <tbody id="preview-body"></tbody>
             </table>
@@ -480,8 +484,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function setCurrentMonth() {
   const now = new Date();
-  document.getElementById('inp-year').value = now.getFullYear();
-  document.getElementById('inp-month').value = now.getMonth() + 1;
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  document.getElementById('inp-year').value = year;
+  document.getElementById('inp-month').value = month;
+  const first = new Date(year, month - 1, 1);
+  const last = new Date(year, month, 0);
+  document.getElementById('inp-fecha-desde').value = first.toISOString().slice(0, 10);
+  document.getElementById('inp-fecha-hasta').value = last.toISOString().slice(0, 10);
 }
 
 async function loadDefaultConfig() {
@@ -668,7 +678,7 @@ function setupListeners() {
     invalidateAnalysis();
   });
 
-  ['inp-year','inp-month','inp-fecha-calculo'].forEach(id => {
+  ['inp-year','inp-month','inp-fecha-desde','inp-fecha-hasta','inp-correlativo-inicial'].forEach(id => {
     document.getElementById(id).addEventListener('change', invalidateAnalysis);
   });
   ['cfg-cuenta-clientes','cfg-sub-diario','cfg-tipo-anexo','cfg-moneda',
@@ -831,7 +841,10 @@ async function doAnalyze() {
   if (modeloFile) fd.append('modelo', modeloFile);
   fd.append('year',          document.getElementById('inp-year').value);
   fd.append('month',         document.getElementById('inp-month').value);
-  fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
+  fd.append('fecha_calculo', 'fecha_cancelacion');
+  fd.append('fecha_desde', document.getElementById('inp-fecha-desde').value || '');
+  fd.append('fecha_hasta', document.getElementById('inp-fecha-hasta').value || '');
+  fd.append('correlativo_inicial', document.getElementById('inp-correlativo-inicial').value || '1');
   fd.append('config_json',   JSON.stringify(readConfig()));
 
   try {
@@ -905,7 +918,15 @@ function renderResults(data) {
 
   // Stats
   const st = data.stats || {};
-  document.getElementById('stats-block').innerHTML = `Total en reporte: ${st.cantidad_original} | Excluidos (serie 0001): ${st.cantidad_excluida} | Procesados: ${st.cantidad_procesada} | Total procesado: S/ ${fmt(st.total_procesado)}`;
+  document.getElementById('stats-block').innerHTML =
+    `Fecha cobro (origen): ${escHtml(st.fecha_cobro_origen || 'fecha_ingreso')} | ` +
+    `Rango seleccionado: ${escHtml(st.rango_cobro_desde || '-')} a ${escHtml(st.rango_cobro_hasta || '-')} | ` +
+    `Abonos en rango: ${st.abonos_en_rango || 0} | ` +
+    `Asientos: ${st.cantidad_asientos || 0} | ` +
+    `Fuera de rango: ${st.movimientos_fuera_rango || 0} | ` +
+    `Correlativos: ${(st.correlativo_inicial || 0)}-${(st.correlativo_final || 0)} | ` +
+    `Total en rango: S/ ${fmt(st.total_en_rango || 0)} | ` +
+    `Total en reporte: ${st.cantidad_original} | Excluidos (serie 0001): ${st.cantidad_excluida} | Procesados: ${st.cantidad_procesada}`;
   document.getElementById('stats-block').style.display = 'block';
 
   // Preview
@@ -1059,7 +1080,10 @@ async function doGenerate() {
   if (modeloFile) fd.append('modelo', modeloFile);
   fd.append('year',          document.getElementById('inp-year').value);
   fd.append('month',         document.getElementById('inp-month').value);
-  fd.append('fecha_calculo', document.getElementById('inp-fecha-calculo').value);
+  fd.append('fecha_calculo', 'fecha_cancelacion');
+  fd.append('fecha_desde', document.getElementById('inp-fecha-desde').value || '');
+  fd.append('fecha_hasta', document.getElementById('inp-fecha-hasta').value || '');
+  fd.append('correlativo_inicial', document.getElementById('inp-correlativo-inicial').value || '1');
   fd.append('config_json',   JSON.stringify(readConfig()));
 
   try {

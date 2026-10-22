@@ -26,8 +26,10 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from transformer import (  # noqa: E402
+    COBRO_DATE_COLUMN,
     DEFAULT_CONFIG,
     build_carga_dataframe,
+    build_generation_preview,
     build_conciliacion,
     create_validation_report,
     ensure_no_nan,
@@ -218,19 +220,25 @@ def _build_analyze_response(
     periodo: str,
     config: Dict[str, Any],
     fecha_calculo: str,
+    fecha_desde: Optional[str],
+    fecha_hasta: Optional[str],
+    correlativo_inicial: int,
 ) -> Dict[str, Any]:
     errors, warnings, info = validate_report(
-        processed, periodo=periodo, fecha_calculo=fecha_calculo, config=config
+        processed,
+        periodo=periodo,
+        fecha_calculo=fecha_calculo,
+        config=config,
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta,
+        correlativo_inicial=correlativo_inicial,
     )
 
     tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(processed, config)
 
     # Preview (up to 200 rows)
     preview: List[Dict[str, Any]] = []
-    fecha_col = {
-        'fecha_cancelacion': 'fecha_cancelacion',
-        'fecha_emi': 'fecha_emi',
-    }.get(fecha_calculo)
+    fecha_col = COBRO_DATE_COLUMN
 
     for (idx, row), tip in zip(processed.head(200).iterrows(), tip_doc_series.head(200)):
         fecha_val = ''
@@ -338,6 +346,20 @@ def _build_analyze_response(
         for obs in tip_doc_obs
     ]
 
+    generation_preview: Dict[str, Any] = {}
+    if not errors:
+        try:
+            generation_preview = build_generation_preview(
+                processed,
+                periodo=periodo,
+                config=config,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+                correlativo_inicial=correlativo_inicial,
+            )
+        except ValueError:
+            generation_preview = {}
+
     stats = {
         'cantidad_original': len(raw),
         'cantidad_excluida': len(excluded),
@@ -347,6 +369,15 @@ def _build_analyze_response(
             if 'importe_cancelado' in processed.columns else 0.0,
             2,
         ),
+        'fecha_cobro_origen': COBRO_DATE_COLUMN,
+        'rango_cobro_desde': generation_preview.get('fecha_desde').strftime('%d/%m/%Y') if generation_preview else '',
+        'rango_cobro_hasta': generation_preview.get('fecha_hasta').strftime('%d/%m/%Y') if generation_preview else '',
+        'abonos_en_rango': generation_preview.get('abonos_en_rango', 0),
+        'movimientos_fuera_rango': generation_preview.get('movimientos_fuera_rango', 0),
+        'cantidad_asientos': generation_preview.get('cantidad_asientos', 0),
+        'total_en_rango': generation_preview.get('total_en_rango', 0.0),
+        'correlativo_inicial': generation_preview.get('correlativo_inicial', correlativo_inicial),
+        'correlativo_final': generation_preview.get('correlativo_final', correlativo_inicial - 1),
     }
 
     return {
@@ -479,6 +510,9 @@ async def analyze(
     year: str = Form(...),
     month: str = Form(...),
     fecha_calculo: str = Form('fecha_cancelacion'),
+    fecha_desde: Optional[str] = Form(None),
+    fecha_hasta: Optional[str] = Form(None),
+    correlativo_inicial: int = Form(1),
     config_json: str = Form('{}'),
     modelo: Optional[UploadFile] = None,
 ):
@@ -508,7 +542,17 @@ async def analyze(
 
             raw = read_raw_ode_report(reporte_path)
             raw, excluded, processed = split_ode_rows(raw)
-            result = _build_analyze_response(raw, excluded, processed, periodo, config, fecha_calculo)
+            result = _build_analyze_response(
+                raw,
+                excluded,
+                processed,
+                periodo,
+                config,
+                fecha_calculo,
+                fecha_desde,
+                fecha_hasta,
+                correlativo_inicial,
+            )
     except HTTPException:
         raise
     except Exception as exc:
@@ -525,6 +569,9 @@ async def generate(
     year: str = Form(...),
     month: str = Form(...),
     fecha_calculo: str = Form('fecha_cancelacion'),
+    fecha_desde: Optional[str] = Form(None),
+    fecha_hasta: Optional[str] = Form(None),
+    correlativo_inicial: int = Form(1),
     config_json: str = Form('{}'),
     modelo: Optional[UploadFile] = None,
 ):
@@ -577,6 +624,9 @@ async def generate(
                 fecha_calculo=fecha_calculo,
                 periodo=periodo,
                 model_path=modelo_path,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+                correlativo_inicial=correlativo_inicial,
             )
 
             xls_bytes = Path(result['output_file']).read_bytes()

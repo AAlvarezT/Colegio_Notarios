@@ -75,12 +75,16 @@ Pasos:
 
 ## Consideraciones del proceso
 - Las series `0001` se excluyen automáticamente.
-- Interbank, BBVA y Banco de la Nación se procesan por separado.
+- Las cobranzas se registran con la **fecha real de cobro** tomada de la columna `fecha_ingreso` del reporte ODE.
+- Los asientos se agrupan por **fecha de cobro + banco/caja + cuenta contable + moneda**.
+- No se mezclan cobros de días distintos en un mismo asiento.
 - `OTROS` se registra como cobro en efectivo/Caja en la cuenta `10100001`, sin medio de pago.
+- Si el rango seleccionado mezcla más de un mes, la generación se bloquea para procesar cada mes por separado.
+- `TIP_CAMBIO` se mantiene según la lógica vigente; STARSOFT puede requerir tipos de cambio registrados para las fechas de asiento.
 - Los archivos resultantes se guardan en la carpeta `salida`.
 - No se debe cerrar el programa mientras está procesando.
 - El archivo original no se modifica.
-- Al cambiar el archivo, el periodo o el criterio de fecha, el análisis previo se invalida automáticamente.
+- Al cambiar el archivo, el periodo, el rango de cobro o el correlativo inicial, el análisis previo se invalida automáticamente.
 
 ## Archivos generados
 - `CARGA_COBRANZAS_ODE_YYYYMM.xls` — **archivo principal**; Excel 97-2003 real generado con `xlwt`. Úsalo en la macro "Pasar ventas y clientes a formato TXT".
@@ -138,11 +142,12 @@ Ver `.env.example` para referencia:
 1. Abre `http://localhost:8000` (o la URL de Vercel).
 2. Ingresa las credenciales configuradas.
 3. **Sección "Archivos y periodo"**: selecciona el reporte `.xlsx` de ODE, el año y mes del periodo.
-4. **(Opcional)** En "Configuración" ajusta cuentas contables, bancos y serie_map. Puedes exportar/importar la config como JSON.
-5. Haz clic en **"Analizar archivos"**: revisa errores, advertencias y la vista previa de TIP_DOC.
-6. Si hay series sin resolver: selecciona **01 (Factura)** o **03 (Boleta)** para cada una y haz clic en **"Aplicar mapeo y re-analizar"**.
-7. Una vez que el estado muestre **"LISTO PARA GENERAR"**, haz clic en **"Generar carga"**.
-8. Descarga los archivos:
+4. Define **Fecha cobro desde/hasta** y el **correlativo inicial** para continuar las cargas semanales.
+5. **(Opcional)** En "Configuración" ajusta cuentas contables, bancos y serie_map. Puedes exportar/importar la config como JSON.
+6. Haz clic en **"Analizar archivos"**: revisa errores, advertencias, rango/abonos/asientos/correlativos y la vista previa.
+7. Si hay series sin resolver: selecciona **01 (Factura)** o **03 (Boleta)** para cada una y haz clic en **"Aplicar mapeo y re-analizar"**.
+8. Una vez que el estado muestre **"LISTO PARA GENERAR"**, haz clic en **"Generar carga"**.
+9. Descarga los archivos:
    - 🟢 **CARGA_ODE_YYYYMM.xls** — este es el archivo para la macro del estudio.
    - **CARGA_ODE_YYYYMM.xlsx** — copia de respaldo.
    - **REPORTE_ODE_YYYYMM.xlsx** — solo revisión interna, no cargarlo en la macro.
@@ -179,4 +184,3 @@ python -m pytest tests/ -q
 **Suite completa**: 138 passed, 1 skipped.
 
 **Pendiente de validar con archivo real de Sharon**: comportamiento con reportes que mezclen facturas y boletas reales, incluyendo formatos de fecha y RUC no estándar.
-

@@ -64,12 +64,21 @@ def _auth_cookies():
 def _make_xlsx(rows, with_tipo_col=True, banco='INTERBANK'):
     wb = openpyxl.Workbook()
     ws = wb.active
-    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco']
+    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco']
     if with_tipo_col:
         cols.append('Tipo Comprobante')
     ws.append(cols)
     for r in rows:
-        ws.append(r[:6] + ((r[6],) if with_tipo_col and len(r) > 6 else ()))
+        if with_tipo_col:
+            if len(r) >= 8:
+                ws.append(r[:7] + (r[7],))
+            else:
+                ws.append((r[0], r[1], r[2], r[3], r[4], r[4], r[5], r[6]))
+        else:
+            if len(r) >= 8:
+                ws.append(r[:7])
+            else:
+                ws.append((r[0], r[1], r[2], r[3], r[4], r[4], r[5]))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -188,6 +197,7 @@ class TestUnconfiguredBank:
             'documento': ['0000001'],
             'importe_cancelado': [100.0],
             'banco': [banco],
+            'fecha_ingreso': [self._DATE],
             'fecha_cancelacion': [self._DATE],
             'tipo_comprobante': ['01'],
         })
