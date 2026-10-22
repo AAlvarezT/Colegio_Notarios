@@ -1242,7 +1242,10 @@ def create_validation_report(summary: Dict[str, Any], source_path: Path, output_
             ['Periodo', summary['periodo']],
             ['Cantidad original', summary['cantidad_original']],
             ['Cantidad excluida', summary['cantidad_excluida']],
+            ['Cantidad reporte total', summary.get('cantidad_reporte_total', summary['cantidad_procesada'])],
             ['Cantidad procesada', summary['cantidad_procesada']],
+            ['Cantidad fuera de rango', summary.get('cantidad_fuera_rango', summary.get('movimientos_fuera_rango', 0))],
+            ['Total en reporte', summary.get('total_reporte', summary['total_procesado'])],
             ['Total procesado', summary['total_procesado']],
             ['Total débito', summary['total_debito']],
             ['Total crédito', summary['total_credito']],
@@ -1500,6 +1503,11 @@ def process_report(
     if errors:
         raise ValueError('Se encontraron errores bloqueantes:\n- ' + '\n- '.join(errors))
 
+    included_df, out_of_range_df, _, _ = filter_movements_by_collection_range(
+        processed,
+        fecha_desde=fecha_desde,
+        fecha_hasta=fecha_hasta,
+    )
     generation_preview = build_generation_preview(
         processed,
         periodo=periodo,
@@ -1523,16 +1531,17 @@ def process_report(
     if carga.empty:
         raise ValueError('No se pudieron generar registros contables a partir del reporte.')
 
-    total_procesado = float(processed['importe_cancelado'].sum()) if 'importe_cancelado' in processed.columns else 0.0
+    total_reporte = float(processed['importe_cancelado'].sum()) if 'importe_cancelado' in processed.columns else 0.0
+    total_incluido = float(included_df['importe_cancelado'].sum()) if 'importe_cancelado' in included_df.columns else 0.0
     total_debito = float(carga[carga['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum()) if 'DEBE HABER' in carga.columns else 0.0
     total_credito = float(carga[carga['DEBE HABER'] == 'H']['IMPORT_TOTAL'].sum()) if 'DEBE HABER' in carga.columns else 0.0
     diff = abs(total_debito - total_credito)
 
     if not np.isclose(total_debito, total_credito, atol=0.01):
         raise ValueError('La carga generada no cuadra: debe y crédito deben coincidir.')
-    if not np.isclose(total_procesado, total_debito, atol=0.01):
+    if not np.isclose(total_incluido, total_debito, atol=0.01):
         raise ValueError('El total procesado no coincide con el débito generado.')
-    if not np.isclose(total_procesado, total_credito, atol=0.01):
+    if not np.isclose(total_incluido, total_credito, atol=0.01):
         raise ValueError('El total procesado no coincide con el crédito generado.')
     movimiento = carga[carga['DEBE HABER'] == 'H']
     if not movimiento.empty:
@@ -1549,9 +1558,9 @@ def process_report(
 
     conciliacion = build_conciliacion(carga)
 
-    # TIP_DOC breakdown — counts and amounts from original processed rows only
-    tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(processed, config)
-    ic = processed['importe_cancelado'] if 'importe_cancelado' in processed.columns else pd.Series([0.0] * len(processed), index=processed.index)
+    # TIP_DOC breakdown — counts and amounts from included rows only
+    tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(included_df, config)
+    ic = included_df['importe_cancelado'] if 'importe_cancelado' in included_df.columns else pd.Series([0.0] * len(included_df), index=included_df.index)
     tip_doc_summary = {
         '01': int((tip_doc_series == '01').sum()),
         '03': int((tip_doc_series == '03').sum()),
@@ -1560,7 +1569,7 @@ def process_report(
         'importe_03': round(float(ic[tip_doc_series == '03'].sum()), 2),
         'importe_sin_resolver': round(float(ic[tip_doc_series == ''].sum()), 2),
     }
-    processed_display = processed.copy()
+    processed_display = included_df.copy()
     processed_display['tip_doc_asignado'] = tip_doc_series
 
     summary = {
@@ -1568,8 +1577,11 @@ def process_report(
         'periodo': periodo,
         'cantidad_original': len(raw),
         'cantidad_excluida': len(excluded),
-        'cantidad_procesada': len(processed),
-        'total_procesado': round(total_procesado, 2),
+        'cantidad_reporte_total': len(processed),
+        'cantidad_procesada': len(included_df),
+        'cantidad_fuera_rango': len(out_of_range_df),
+        'total_reporte': round(total_reporte, 2),
+        'total_procesado': round(total_incluido, 2),
         'total_debito': round(total_debito, 2),
         'total_credito': round(total_credito, 2),
         'diferencia': round(diff, 2),
@@ -1582,6 +1594,7 @@ def process_report(
         'correlativo_final': generation_preview['correlativo_final'],
         'fecha_cobro_origen': COBRO_DATE_COLUMN,
         'procesados': processed_display.to_dict(orient='records'),
+        'fuera_rango': out_of_range_df.to_dict(orient='records'),
         'excluidos': excluded.to_dict(orient='records'),
         'conciliacion': conciliacion,
         'tip_doc_summary': tip_doc_summary,
@@ -1611,8 +1624,11 @@ def process_report(
             'periodo': periodo,
             'cantidad_original': len(raw),
             'cantidad_excluida': len(excluded),
-            'cantidad_procesada': len(processed),
-            'total_procesado': round(total_procesado, 2),
+            'cantidad_reporte_total': len(processed),
+            'cantidad_procesada': len(included_df),
+            'cantidad_fuera_rango': len(out_of_range_df),
+            'total_reporte': round(total_reporte, 2),
+            'total_procesado': round(total_incluido, 2),
             'total_debito': round(total_debito, 2),
             'total_credito': round(total_credito, 2),
             'diferencia': round(diff, 2),
@@ -1630,7 +1646,9 @@ def process_report(
         'output_file': str(out_file_xls),       # primary .xls — used by the macro
         'output_file_xlsx': str(out_file_xlsx), # backup .xlsx — for review only
         'report_file': str(report_file),
-        'processed_df': processed,
+        'processed_df': included_df,
+        'processed_all_df': processed,
+        'out_of_range_df': out_of_range_df,
         'excluded_df': excluded,
         'output_df': carga,  # includes _banco aux column for caller inspection
         'errors': errors,

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import openpyxl
 import pandas as pd
 import pytest
 
 from transformer import (
     DEFAULT_CONFIG,
     build_carga_dataframe,
+    process_report,
     validate_report,
 )
 
@@ -140,3 +142,29 @@ def test_correlativo_inicial_is_respected():
     carga = build_carga_dataframe(_df(), periodo='202608', config=_cfg(), correlativo_inicial=7)
     comps = sorted({int(c) for c in carga['COMPROBANTE'].astype(str).unique()})
     assert comps[0] == 7
+
+
+def test_process_report_uses_only_in_range_movements(tmp_path):
+    src = tmp_path / 'rango.xlsx'
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
+    ws.append(['20111111111', 'FE01', '000001', 100.0, datetime(2026, 8, 5), datetime(2026, 8, 5), 'INTERBANK', '01'])
+    ws.append(['20111111112', 'FE01', '000002', 100.0, datetime(2026, 8, 20), datetime(2026, 8, 20), 'INTERBANK', '01'])
+    wb.save(src)
+
+    result = process_report(
+        src,
+        tmp_path,
+        config={**_cfg(), 'serie_map': {}},
+        periodo='202608',
+        fecha_desde='2026-08-01',
+        fecha_hasta='2026-08-10',
+    )
+    summary = result['summary']
+    assert summary['total_reporte'] == 200.0
+    assert summary['total_procesado'] == 100.0
+    assert summary['cantidad_reporte_total'] == 2
+    assert summary['cantidad_procesada'] == 1
+    assert summary['cantidad_fuera_rango'] == 1
+    assert int((result['output_df']['DEBE HABER'] == 'H').sum()) == 1

@@ -8,6 +8,7 @@ import io
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 # Configure env vars BEFORE importing server so auth is active
 os.environ['SECRET_KEY'] = 'test-secret-key-do-not-use-in-prod'
@@ -117,14 +118,20 @@ def _analyze(xlsx_bytes: bytes, config: dict | None = None, year: str = '2026',
 
 
 def _generate(xlsx_bytes: bytes, config: dict | None = None, year: str = '2026',
-              month: str = '8', cookies: dict | None = None) -> tuple:
+              month: str = '8', cookies: dict | None = None,
+              fecha_desde: str | None = None, fecha_hasta: str | None = None) -> tuple:
     cookies = cookies or _auth_cookies()
     cfg = config or _default_config()
+    data = {'year': year, 'month': month, 'fecha_calculo': 'fecha_cancelacion',
+            'config_json': json.dumps(cfg)}
+    if fecha_desde is not None:
+        data['fecha_desde'] = fecha_desde
+    if fecha_hasta is not None:
+        data['fecha_hasta'] = fecha_hasta
     res = client.post(
         '/api/generate',
         files={'reporte': ('reporte.xlsx', xlsx_bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')},
-        data={'year': year, 'month': month, 'fecha_calculo': 'fecha_cancelacion',
-              'config_json': json.dumps(cfg)},
+        data=data,
         cookies=cookies,
     )
     return res, res.json() if res.headers.get('content-type', '').startswith('application/json') else {}
@@ -280,6 +287,34 @@ def test_generate_isolation():
     for res, data in results:
         assert res.status_code == 200, data
         assert len(data.get('files', [])) == 3
+
+
+def test_generate_filters_by_range_only_included_movements():
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
+    ws.append(['20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 5), datetime(2026, 8, 5), 'INTERBANK', '01'])
+    ws.append(['20222222222', 'FE01', '0000002', 100.0, datetime(2026, 8, 20), datetime(2026, 8, 20), 'INTERBANK', '01'])
+    buf = io.BytesIO()
+    wb.save(buf)
+    xlsx = buf.getvalue()
+
+    res, data = _generate(
+        xlsx,
+        config=_default_config(serie_map={}),
+        fecha_desde='2026-08-01',
+        fecha_hasta='2026-08-10',
+    )
+    assert res.status_code == 200, data
+    summary = data['summary']
+    assert summary['total_reporte'] == 200.0
+    assert summary['total_procesado'] == 100.0
+    assert summary['cantidad_reporte_total'] == 2
+    assert summary['cantidad_procesada'] == 1
+    assert summary['cantidad_fuera_rango'] == 1
+    assert len(data.get('files', [])) == 3
 
 
 def test_response_no_nan_no_paths():

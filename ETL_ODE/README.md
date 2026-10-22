@@ -75,7 +75,8 @@ Pasos:
 
 ## Consideraciones del proceso
 - Las series `0001` se excluyen automáticamente.
-- Las cobranzas se registran con la **fecha real de cobro** tomada de la columna `fecha_ingreso` del reporte ODE.
+- Para el procesamiento semanal, la fecha operativa usada actualmente es la columna `fecha_ingreso`.
+  > Nota: el significado funcional exacto de `fecha_ingreso` como fecha de abono/cobro confirmado sigue pendiente de validación con Sharon/proveedor.
 - Los asientos se agrupan por **fecha de cobro + banco/caja + cuenta contable + moneda**.
 - No se mezclan cobros de días distintos en un mismo asiento.
 - `OTROS` se registra como cobro en efectivo/Caja en la cuenta `10100001`, sin medio de pago.

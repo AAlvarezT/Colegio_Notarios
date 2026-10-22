@@ -919,7 +919,7 @@ function renderResults(data) {
   // Stats
   const st = data.stats || {};
   document.getElementById('stats-block').innerHTML =
-    `Fecha cobro (origen): ${escHtml(st.fecha_cobro_origen || 'fecha_ingreso')} | ` +
+    `Fecha operativa (origen): ${escHtml(st.fecha_cobro_origen || 'fecha_ingreso')} (pendiente validar significado con proveedor/Sharon) | ` +
     `Rango seleccionado: ${escHtml(st.rango_cobro_desde || '-')} a ${escHtml(st.rango_cobro_hasta || '-')} | ` +
     `Abonos en rango: ${st.abonos_en_rango || 0} | ` +
     `Asientos: ${st.cantidad_asientos || 0} | ` +
