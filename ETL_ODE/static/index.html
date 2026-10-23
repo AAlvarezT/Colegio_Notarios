@@ -520,6 +520,8 @@ let nextGenerationRequestId = 1;
 // Object URLs for download links — revoked on invalidation
 let activeDownloadUrls = [];
 let activeHelpTrigger = null;
+let pinnedHelpTrigger = null;
+let lastInputWasKeyboard = false;
 
 // Sharon's confirmed defaults — single source of truth in the frontend.
 // schema_version:2 tells the server not to re-add deleted banks.
@@ -567,14 +569,39 @@ function initGuideModal() {
   var openBtn = document.getElementById('btn-open-guide');
   var closeBtn = document.getElementById('btn-close-guide');
   var modal = document.getElementById('guide-modal');
-  if (!openBtn || !closeBtn || !modal) return;
+  var panel = modal ? modal.querySelector('.guide-panel') : null;
+  if (!openBtn || !closeBtn || !modal || !panel) return;
+  var backgroundRoots = [document.querySelector('header'), document.querySelector('.container')].filter(Boolean);
+  var focusablesSelector = 'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])';
+
+  function setBackgroundInert(isInert) {
+    backgroundRoots.forEach(function(el) {
+      if (!el) return;
+      if (isInert) {
+        el.setAttribute('inert', '');
+        el.setAttribute('aria-hidden', 'true');
+      } else {
+        el.removeAttribute('inert');
+        el.removeAttribute('aria-hidden');
+      }
+    });
+  }
+
+  function getPanelFocusables() {
+    return Array.from(panel.querySelectorAll(focusablesSelector))
+      .filter(function(el) {
+        return !el.disabled && el.getAttribute('aria-hidden') !== 'true';
+      });
+  }
 
   function closeModal() {
     modal.classList.remove('open');
+    setBackgroundInert(false);
     openBtn.focus();
   }
   function openModal() {
     modal.classList.add('open');
+    setBackgroundInert(true);
     closeBtn.focus();
   }
 
@@ -584,8 +611,41 @@ function initGuideModal() {
     if (ev.target === modal) closeModal();
   });
   document.addEventListener('keydown', function(ev) {
-    if (ev.key === 'Escape' && modal.classList.contains('open')) {
+    if (!modal.classList.contains('open')) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
       closeModal();
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+    var focusables = getPanelFocusables();
+    if (!focusables.length) {
+      ev.preventDefault();
+      return;
+    }
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    var active = document.activeElement;
+    if (ev.shiftKey) {
+      if (active === first || !panel.contains(active)) {
+        ev.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+    if (active === last || !panel.contains(active)) {
+      ev.preventDefault();
+      first.focus();
+    }
+  });
+  document.addEventListener('focusin', function(ev) {
+    if (!modal.classList.contains('open')) return;
+    if (panel.contains(ev.target)) return;
+    var focusables = getPanelFocusables();
+    if (focusables.length) {
+      focusables[0].focus();
+    } else {
+      closeBtn.focus();
     }
   });
 }
@@ -607,12 +667,14 @@ function positionHelpPopover(trigger, popover) {
   popover.style.top = top + 'px';
 }
 
-function showHelpPopover(trigger) {
+function showHelpPopover(trigger, opts) {
   var popover = document.getElementById('help-popover');
   if (!popover || !trigger) return;
   var text = trigger.getAttribute('data-help') || '';
   if (!text) return;
+  var options = opts || {};
   activeHelpTrigger = trigger;
+  pinnedHelpTrigger = options.pin ? trigger : null;
   popover.textContent = text;
   popover.hidden = false;
   positionHelpPopover(trigger, popover);
@@ -627,45 +689,62 @@ function hideHelpPopover() {
     activeHelpTrigger.setAttribute('aria-expanded', 'false');
   }
   activeHelpTrigger = null;
+  pinnedHelpTrigger = null;
 }
 
 function initHelpTooltips() {
   var popover = document.getElementById('help-popover');
   if (!popover) return;
+  popover.setAttribute('tabindex', '-1');
   var triggers = Array.from(document.querySelectorAll('.help-trigger'));
   triggers.forEach(function(btn, idx) {
     btn.setAttribute('aria-haspopup', 'true');
     btn.setAttribute('aria-expanded', 'false');
     btn.setAttribute('aria-controls', 'help-popover');
   });
+  document.addEventListener('pointerdown', function() {
+    lastInputWasKeyboard = false;
+  }, true);
+  document.addEventListener('keydown', function(ev) {
+    lastInputWasKeyboard = true;
+    if (ev.key === 'Escape') hideHelpPopover();
+  }, true);
 
   document.addEventListener('mouseover', function(ev) {
     var trg = ev.target.closest('.help-trigger');
-    if (trg) showHelpPopover(trg);
+    if (trg) showHelpPopover(trg, { pin: false });
   });
   document.addEventListener('focusin', function(ev) {
     var trg = ev.target.closest('.help-trigger');
-    if (trg) showHelpPopover(trg);
+    if (trg && lastInputWasKeyboard) showHelpPopover(trg, { pin: false });
   });
   document.addEventListener('mouseout', function(ev) {
     var trg = ev.target.closest('.help-trigger');
     if (!trg || activeHelpTrigger !== trg) return;
+    if (pinnedHelpTrigger === trg) return;
     if (trg.contains(ev.relatedTarget)) return;
+    if (popover.contains(ev.relatedTarget)) return;
     hideHelpPopover();
   });
-  document.addEventListener('focusout', function(ev) {
-    var trg = ev.target.closest('.help-trigger');
-    if (!trg || activeHelpTrigger !== trg) return;
-    if (trg.contains(ev.relatedTarget)) return;
+  popover.addEventListener('mouseout', function(ev) {
+    if (!activeHelpTrigger) return;
+    if (pinnedHelpTrigger === activeHelpTrigger) return;
+    var next = ev.relatedTarget;
+    if (popover.contains(next)) return;
+    if (activeHelpTrigger.contains(next)) return;
     hideHelpPopover();
   });
   document.addEventListener('click', function(ev) {
     var trg = ev.target.closest('.help-trigger');
     if (trg) {
       if (activeHelpTrigger === trg && !popover.hidden) {
-        hideHelpPopover();
+        if (pinnedHelpTrigger === trg) {
+          hideHelpPopover();
+        } else {
+          pinnedHelpTrigger = trg;
+        }
       } else {
-        showHelpPopover(trg);
+        showHelpPopover(trg, { pin: true });
       }
       ev.preventDefault();
       return;
@@ -673,7 +752,20 @@ function initHelpTooltips() {
     if (!popover.hidden && !popover.contains(ev.target)) hideHelpPopover();
   });
   document.addEventListener('keydown', function(ev) {
-    if (ev.key === 'Escape') hideHelpPopover();
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      var trg = ev.target.closest('.help-trigger');
+      if (!trg) return;
+      ev.preventDefault();
+      if (activeHelpTrigger === trg && !popover.hidden) {
+        if (pinnedHelpTrigger === trg) {
+          hideHelpPopover();
+        } else {
+          pinnedHelpTrigger = trg;
+        }
+      } else {
+        showHelpPopover(trg, { pin: true });
+      }
+    }
   });
   window.addEventListener('resize', function() {
     if (!popover.hidden && activeHelpTrigger) positionHelpPopover(activeHelpTrigger, popover);
