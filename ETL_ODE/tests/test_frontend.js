@@ -58,7 +58,13 @@ const MINIMAL_HTML = `<!DOCTYPE html><html><body>
   <div   id="file-name"></div>
   <input type="number" id="inp-year"  value="2026">
   <select id="inp-month"><option value="8" selected>Agosto</option></select>
-  <select id="inp-fecha-calculo"><option value="fecha_cancelacion" selected></option></select>
+  <input type="date" id="inp-fecha-desde" value="2026-08-01">
+  <input type="date" id="inp-fecha-hasta" value="2026-08-31">
+  <input type="number" id="inp-correlativo-inicial" value="1">
+  <button id="btn-open-guide">Ayuda</button>
+  <button id="btn-close-guide">Cerrar</button>
+  <div id="guide-modal"></div>
+  <div id="help-popover" hidden></div>
   <input type="text" id="cfg-cuenta-clientes"  value="12120001">
   <input type="text" id="cfg-sub-diario"       value="07">
   <input type="text" id="cfg-tipo-anexo"       value="02">

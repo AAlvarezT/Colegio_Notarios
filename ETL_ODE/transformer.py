@@ -20,6 +20,10 @@ OUTPUT_COLUMNS = [
 ]
 
 COBRO_DATE_COLUMN = 'fecha_ingreso'
+SERIES_FIXED_TIP_DOC = {
+    'FE01': '01',  # Factura
+    'BE01': '03',  # Boleta
+}
 
 BANK_PRIORITY = ['INTERBANK', 'BBVA CONTINENTAL', 'BCP', 'DE LA NACION', 'OTROS']
 LEGACY_OTROS_CFG = {'cuenta_contable': '10100011', 'medio_pago': '008'}
@@ -1010,6 +1014,42 @@ def validate_report(
                     f"(ej: {ejemplos}). {base_msg}"
                 )
 
+    if config is not None:
+        # Fixed business rule validated with Sharon (23/10/2026):
+        # FE01 -> 01 and BE01 -> 03 must never be inverted.
+        fixed_rule_errors: List[str] = []
+        serie_map_cfg = (config or {}).get('serie_map', {}) or {}
+        for idx, row in df.iterrows():
+            serie = normalize_serie(row.get('serie', ''))
+            expected = SERIES_FIXED_TIP_DOC.get(serie)
+            if expected is None:
+                continue
+
+            row_label = _row_reference_label(row, idx)
+            doc = normalize_document_value(row.get('documento', '')) or 'N/A'
+
+            raw_explicit = row.get('tipo_comprobante', None)
+            explicit: Optional[str] = None
+            if raw_explicit is not None and str(raw_explicit).strip():
+                explicit = normalize_tip_doc_code(raw_explicit)
+                if explicit and explicit != expected:
+                    fixed_rule_errors.append(
+                        f"Serie '{serie}' doc {doc} (fila {row_label}): "
+                        f"tipo_comprobante={explicit} contradice el tipo esperado {expected}. "
+                        "Corrige el reporte de origen."
+                    )
+
+            mapped, matched_key, _ = _match_serie_map(serie, serie_map_cfg)
+            if mapped is not None and mapped != expected:
+                fixed_rule_errors.append(
+                    f"Serie '{serie}' doc {doc} (fila {row_label}): "
+                    f"mapeo de serie ({matched_key!r} -> {mapped}) contradice el tipo esperado {expected}. "
+                    "Corrige 'serie_map' antes de generar."
+                )
+
+        if fixed_rule_errors:
+            errors.extend(fixed_rule_errors)
+
     if not errors and config is not None:
         try:
             preview = build_generation_preview(
@@ -1202,15 +1242,27 @@ def build_conciliacion(carga: pd.DataFrame) -> List[Dict[str, Any]]:
         else:
             banco = str(grupo['MEDIO_PAGO'].iloc[0]) if not grupo.empty else 'N/A'
         mov_h = grupo[grupo['DEBE HABER'] == 'H']
+        mov_d = grupo[grupo['DEBE HABER'] == 'D']
         cantidad = int(len(mov_h))
-        debito = float(grupo[grupo['DEBE HABER'] == 'D']['IMPORT_TOTAL'].sum())
+        debito = float(mov_d['IMPORT_TOTAL'].sum())
         credito = float(mov_h['IMPORT_TOTAL'].sum())
         diferencia = abs(debito - credito)
         estado = 'CUADRADO' if diferencia <= 0.01 else 'REVISAR'
+        fecha_cobro = ''
+        cuenta_contable = ''
+        if not mov_d.empty:
+            fecha_cobro = pd.to_datetime(mov_d['FEC_REG'].iloc[0], errors='coerce')
+            if pd.notna(fecha_cobro):
+                fecha_cobro = fecha_cobro.strftime('%d/%m/%Y')
+            else:
+                fecha_cobro = ''
+            cuenta_contable = str(mov_d['CTA_CONTABLE'].iloc[0])
         rows.append({
             'banco': banco,
             'comprobante': str(comprobante),
             'cantidad': cantidad,
+            'fecha_cobro': fecha_cobro,
+            'cuenta_contable': cuenta_contable,
             'debito': round(debito, 2),
             'credito': round(credito, 2),
             'diferencia': round(diferencia, 2),
@@ -1224,6 +1276,8 @@ def build_conciliacion(carga: pd.DataFrame) -> List[Dict[str, Any]]:
         'banco': 'TOTAL',
         'comprobante': 'TOTAL',
         'cantidad': total_h,
+        'fecha_cobro': '',
+        'cuenta_contable': '',
         'debito': round(total_debito, 2),
         'credito': round(total_credito, 2),
         'diferencia': round(abs(total_debito - total_credito), 2),

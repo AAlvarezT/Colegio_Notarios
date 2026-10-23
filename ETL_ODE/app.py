@@ -14,6 +14,7 @@ from transformer import (
     build_generation_preview,
     DEFAULT_CONFIG,
     configure_file_logging,
+    filter_movements_by_collection_range,
     get_app_dir,
     get_bank_default_config,
     load_config,
@@ -549,7 +550,14 @@ class ConversorODEApp(tk.Tk):
                 fecha_hasta=fecha_hasta,
                 correlativo_inicial=correlativo_inicial,
             )
+            included_df, _, _, _ = filter_movements_by_collection_range(
+                processed,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+            )
             tip_docs, tip_doc_obs = resolve_tip_doc_for_df(processed, cfg)
+            tip_docs_included, _ = resolve_tip_doc_for_df(included_df, cfg)
+
             generation_preview = {}
             if not errors:
                 generation_preview = build_generation_preview(
@@ -573,11 +581,13 @@ class ConversorODEApp(tk.Tk):
                 'raw': raw, 'processed': processed, 'excluded': excluded,
                 'errors': errors, 'warnings': warnings, 'info': info,
                 'tip_docs': tip_docs, 'tip_doc_obs': tip_doc_obs,
+                'tip_docs_included': tip_docs_included,
+                'included': included_df,
                 'generation_preview': generation_preview,
             }
             self.after(0, lambda: self._refresh_analysis(
                 raw, excluded, processed, errors, warnings, info, new_banks,
-                tip_docs, tip_doc_obs, version=version))
+                tip_docs, tip_doc_obs, included_df=included_df, tip_docs_included=tip_docs_included, version=version))
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror('Error', str(exc)))
             self.after(0, lambda: self.status_label.config(text='ERROR AL ANALIZAR'))
@@ -589,6 +599,8 @@ class ConversorODEApp(tk.Tk):
                           warnings: list, info: list, new_banks: list,
                           tip_docs: 'pd.Series | None' = None,
                           tip_doc_obs: 'list | None' = None,
+                          included_df: 'pd.DataFrame | None' = None,
+                          tip_docs_included: 'pd.Series | None' = None,
                           version: int | None = None) -> None:
         # Discard stale results from a superseded analysis
         if version is not None and version != self._analysis_version:
@@ -609,9 +621,12 @@ class ConversorODEApp(tk.Tk):
             warnings = list(warnings) + [
                 f'Banco nuevo: {b}. Verifique la cuenta contable.' for b in new_banks]
 
-        if 'banco' in processed.columns and 'importe_cancelado' in processed.columns:
-            pv = processed[['banco', 'serie', 'documento', 'importe_cancelado', COBRO_DATE_COLUMN]].head(100).copy()
-            td_vals = (tip_docs.head(100).values if tip_docs is not None else [''] * min(100, len(processed)))
+        included = included_df if included_df is not None else processed
+        docs_scope = tip_docs_included if tip_docs_included is not None else tip_docs
+
+        if 'banco' in included.columns and 'importe_cancelado' in included.columns:
+            pv = included[['banco', 'serie', 'documento', 'importe_cancelado', COBRO_DATE_COLUMN]].head(100).copy()
+            td_vals = (docs_scope.head(100).values if docs_scope is not None else [''] * min(100, len(included)))
             pv['tip_doc'] = td_vals
             pv.columns = ['banco', 'serie', 'documento', 'importe', 'fecha', 'tip_doc']
             pv['importe'] = pv['importe'].apply(lambda x: f'{float(x):,.2f}' if pd.notna(x) else '0.00')
@@ -622,14 +637,14 @@ class ConversorODEApp(tk.Tk):
                     str(row['fecha']), row['tip_doc'] or '?'))
 
         # --- Doc-type section ---
-        if tip_docs is not None:
-            n_01  = int((tip_docs == '01').sum())
-            n_03  = int((tip_docs == '03').sum())
-            n_unk = int((tip_docs == '').sum())
-            if 'importe_cancelado' in processed.columns:
-                imp_01  = float(processed.loc[tip_docs == '01', 'importe_cancelado'].sum()) if n_01  > 0 else 0.0
-                imp_03  = float(processed.loc[tip_docs == '03', 'importe_cancelado'].sum()) if n_03  > 0 else 0.0
-                imp_unk = float(processed.loc[tip_docs == '',   'importe_cancelado'].sum()) if n_unk > 0 else 0.0
+        if docs_scope is not None:
+            n_01  = int((docs_scope == '01').sum())
+            n_03  = int((docs_scope == '03').sum())
+            n_unk = int((docs_scope == '').sum())
+            if 'importe_cancelado' in included.columns:
+                imp_01  = float(included.loc[docs_scope == '01', 'importe_cancelado'].sum()) if n_01  > 0 else 0.0
+                imp_03  = float(included.loc[docs_scope == '03', 'importe_cancelado'].sum()) if n_03  > 0 else 0.0
+                imp_unk = float(included.loc[docs_scope == '',   'importe_cancelado'].sum()) if n_unk > 0 else 0.0
                 self._type_summary_var.set(
                     f'Facturas (01): {n_01} — S/{imp_01:,.2f}   │   '
                     f'Boletas (03): {n_03} — S/{imp_03:,.2f}   │   '
@@ -639,7 +654,7 @@ class ConversorODEApp(tk.Tk):
                 self._type_summary_var.set(
                     f'Facturas (01): {n_01}   │   Boletas (03): {n_03}   │   Sin resolver: {n_unk}'
                 )
-            self._populate_series_tree(processed, tip_docs)
+            self._populate_series_tree(included, docs_scope)
             self._populate_serie_map_editor(processed, tip_docs)
         else:
             self._type_summary_var.set('Tipo no analizado.')

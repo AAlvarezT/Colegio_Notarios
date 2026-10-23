@@ -35,6 +35,7 @@ Después de analizar el archivo, la sección **Tipos de comprobante detectados**
 | 2 | Mapeo de series (`serie_map` en config) | Coincidencia exacta primero, luego prefijo más largo |
 
 Códigos admitidos: `01` = Factura, `03` = Boleta.
+Reglas confirmadas por Sharon (23/10/2026): `FE01` debe registrar `01` y `BE01` debe registrar `03`. Si llega una contradicción en el reporte o en `serie_map`, la generación se bloquea.
 
 Si ninguna fuente resuelve el tipo de un comprobante, **la generación se bloquea** y el registro aparece en el editor de series. No existe respaldo automático: el campo `tipo_documento` en `config.json` es un valor histórico que se conserva por compatibilidad de lectura, pero ya no se usa para clasificar comprobantes.
 
@@ -149,7 +150,7 @@ Ver `.env.example` para referencia:
 4. Define **Fecha cobro desde/hasta** y el **correlativo inicial** para continuar las cargas semanales.
 5. **(Opcional)** En "Configuración" ajusta cuentas contables, bancos y serie_map. Puedes exportar/importar la config como JSON.
 6. Haz clic en **"Analizar archivos"**: revisa errores, advertencias, rango/abonos/asientos/correlativos y la vista previa.
-7. Si hay series sin resolver: selecciona **01 (Factura)** o **03 (Boleta)** para cada una y haz clic en **"Aplicar mapeo y re-analizar"**.
+7. Si hay series sin resolver: selecciona **01 (Factura)** o **03 (Boleta)** para cada una y haz clic en **"Guardar mapeo y re-analizar"**.
 8. Una vez que el estado muestre **"LISTO PARA GENERAR"**, haz clic en **"Generar carga"**.
 9. Verifica en el resumen: rango aplicado, cantidad de abonos, total incluido y correlativos.
 10. Descarga los archivos:

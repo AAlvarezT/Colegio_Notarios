@@ -144,6 +144,26 @@ def test_correlativo_inicial_is_respected():
     assert comps[0] == 7
 
 
+def test_fixed_series_rule_blocks_wrong_map():
+    errors, _, _ = validate_report(
+        _df(),
+        periodo='202608',
+        config={**_cfg(), 'serie_map': {'FE01': '03'}},
+    )
+    assert any("Serie 'FE01'" in e and 'esperado 01' in e for e in errors)
+
+
+def test_fixed_series_rule_blocks_wrong_explicit_column():
+    bad = _df().copy()
+    bad.loc[0, 'tipo_comprobante'] = '03'
+    errors, _, _ = validate_report(
+        bad,
+        periodo='202608',
+        config={**_cfg(), 'serie_map': {}},
+    )
+    assert any('tipo_comprobante=03' in e and "Serie 'FE01'" in e for e in errors)
+
+
 def test_process_report_uses_only_in_range_movements(tmp_path):
     src = tmp_path / 'rango.xlsx'
     wb = openpyxl.Workbook()

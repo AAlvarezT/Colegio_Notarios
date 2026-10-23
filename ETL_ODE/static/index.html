@@ -89,6 +89,32 @@
     .stale-notice { background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.83rem; color: #78350f; margin-top: 0.6rem; }
     #status-bar { padding: 0.6rem 1.25rem; border-top: 1px solid var(--gray-border); font-size: 0.82rem; color: var(--gray); display: flex; align-items: center; gap: 0.5rem; }
     .sep { margin: 0.75rem 0; border: none; border-top: 1px solid var(--gray-border); }
+    .help-intro { margin-bottom: 1rem; padding: 0.9rem 1rem; background: #ffffff; border: 1px solid var(--gray-border); border-radius: var(--radius); box-shadow: var(--shadow); display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center; justify-content:space-between; }
+    .help-intro p { font-size: 0.9rem; color: #1f2937; margin: 0; line-height: 1.4; max-width: 690px; }
+    .help-trigger { display:inline-flex; align-items:center; justify-content:center; width:1.2rem; height:1.2rem; margin-left:0.35rem; border:1px solid #9ca3af; border-radius:999px; background:#fff; color:#374151; font-size:0.72rem; font-weight:700; cursor:pointer; vertical-align:middle; }
+    .help-trigger:focus { outline: none; box-shadow: 0 0 0 3px rgba(37,99,235,0.18); border-color: var(--blue); }
+    .help-popover { position: fixed; z-index: 1200; max-width: min(330px, calc(100vw - 24px)); min-width: 220px; background: #111827; color: #f9fafb; border-radius: 8px; padding: 0.65rem 0.7rem; box-shadow: 0 8px 24px rgba(17,24,39,0.22); font-size: 0.79rem; line-height: 1.35; }
+    .help-popover[hidden] { display:none; }
+    .guide-modal { position: fixed; inset: 0; z-index: 1300; background: rgba(15, 23, 42, 0.55); display: none; align-items: center; justify-content: center; padding: 0.8rem; }
+    .guide-modal.open { display:flex; }
+    .guide-panel { width: min(940px, 100%); max-height: calc(100vh - 1.5rem); overflow-y: auto; background: #fff; border-radius: 10px; box-shadow: 0 20px 48px rgba(15, 23, 42, 0.3); padding: 1rem 1rem 1.2rem; }
+    .guide-header { display:flex; align-items:center; justify-content:space-between; gap:0.8rem; margin-bottom:0.75rem; }
+    .guide-header h3 { font-size: 1rem; color:#1a3a5c; margin:0; }
+    .guide-header p { font-size: 0.8rem; color:var(--gray); margin:0.2rem 0 0; }
+    .guide-close { background:#fff; border:1px solid var(--gray-border); border-radius:6px; padding:0.4rem 0.7rem; cursor:pointer; font-size:0.82rem; }
+    .guide-panel details { border:1px solid var(--gray-border); border-radius:8px; padding:0.55rem 0.7rem; margin-bottom:0.55rem; background:#fbfdff; }
+    .guide-panel summary { cursor:pointer; font-weight:700; color:#1f2937; font-size:0.87rem; }
+    .guide-panel ul { margin:0.55rem 0 0 1.1rem; color:#374151; font-size:0.82rem; line-height:1.4; }
+    .guide-panel li { margin-bottom:0.35rem; }
+    .guide-panel p { margin-top:0.55rem; color:#374151; font-size:0.82rem; line-height:1.4; }
+    .always-visible-warnings { margin-top:0.75rem; background:#fffbeb; border:1px solid #fde68a; border-radius:7px; padding:0.7rem 0.85rem; }
+    .always-visible-warnings ul { margin-left:1rem; font-size:0.8rem; color:#92400e; line-height:1.35; }
+    .always-visible-warnings li { margin-bottom:0.2rem; }
+    .stats-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:0.55rem; }
+    .stats-card { border:1px solid var(--gray-border); border-radius:7px; padding:0.55rem 0.65rem; background:#fbfdff; }
+    .stats-card strong { display:block; font-size:0.78rem; color:#374151; margin-bottom:0.2rem; }
+    .stats-card span { font-size:0.86rem; color:#111827; font-weight:600; }
+    .stats-note { font-size:0.8rem; color:var(--gray); margin-top:0.45rem; }
     @media(max-width: 600px) { .row { flex-direction: column; } header h1 { font-size: 0.95rem; } }
   </style>
 </head>
@@ -102,6 +128,10 @@
 </header>
 
 <div class="container">
+  <section class="help-intro">
+    <p>Convierte tu reporte de cancelados ODE en un archivo de carga contable para STARSOFT. Cada abono conserva su fecha de cobro.</p>
+    <button class="btn btn-outline btn-sm" id="btn-open-guide" type="button">Ayuda y guía de uso</button>
+  </section>
 
   <!-- FILES SECTION -->
   <div class="card">
@@ -109,12 +139,16 @@
     <div class="card-body">
       <div class="row">
         <div class="col" style="flex:2; min-width:260px;">
-          <label>Reporte de cancelados ODE (.xlsx / .xls) <span style="color:var(--red)">*</span></label>
+          <label>Reporte de cancelados ODE (.xlsx / .xls) <span style="color:var(--red)">*</span>
+            <button type="button" class="help-trigger" data-help="Archivo original exportado desde ODE con los abonos. El conversor procesa sus filas tal como vienen en ese reporte." aria-label="Ayuda sobre reporte de cancelados ODE">i</button>
+          </label>
           <div class="file-wrapper"><input type="file" id="file-reporte" accept=".xlsx,.xls"></div>
           <div id="file-name" style="font-size:0.78rem; color:var(--gray); margin-top:0.25rem;"></div>
         </div>
         <div class="col" style="min-width:220px;">
-          <label>Archivo modelo (opcional)</label>
+          <label>Archivo modelo (opcional)
+            <button type="button" class="help-trigger" data-help="Opcional. Sirve para validar que la estructura de columnas sea la misma del formato que ya usas. Si no lo cargas, se usa el esquema estándar del conversor." aria-label="Ayuda sobre archivo modelo">i</button>
+          </label>
           <div class="file-wrapper"><input type="file" id="file-modelo" accept=".xlsx,.xls"></div>
         </div>
       </div>
@@ -124,7 +158,9 @@
           <input type="number" id="inp-year" value="2026" min="2020" max="2100" step="1">
         </div>
         <div class="col">
-          <label>Mes</label>
+          <label>Mes
+            <button type="button" class="help-trigger" data-help="Periodo contable del archivo a generar. Debe corresponder al mes de las fechas de cobro incluidas." aria-label="Ayuda sobre periodo">?</button>
+          </label>
           <select id="inp-month">
             <option value="1">Enero</option><option value="2">Febrero</option>
             <option value="3">Marzo</option><option value="4">Abril</option>
@@ -135,27 +171,35 @@
           </select>
         </div>
         <div class="col">
-          <label>Fecha cobro desde</label>
+          <label>Fecha cobro desde
+            <button type="button" class="help-trigger" data-help="Filtra por fecha de cobro (Fecha Ingreso). Incluye este día en los abonos exportados." aria-label="Ayuda sobre fecha desde">?</button>
+          </label>
           <input type="date" id="inp-fecha-desde">
         </div>
         <div class="col">
-          <label>Fecha cobro hasta</label>
+          <label>Fecha cobro hasta
+            <button type="button" class="help-trigger" data-help="Filtra por fecha de cobro (Fecha Ingreso). Incluye este día en los abonos exportados." aria-label="Ayuda sobre fecha hasta">?</button>
+          </label>
           <input type="date" id="inp-fecha-hasta">
         </div>
         <div class="col">
-          <label>Correlativo inicial</label>
+          <label>Correlativo inicial
+            <button type="button" class="help-trigger" data-help="Siguiente número de asiento disponible en STARSOFT. Debes verificarlo allí; el conversor no consulta asientos existentes." aria-label="Ayuda sobre correlativo inicial">?</button>
+          </label>
           <input type="number" id="inp-correlativo-inicial" value="1" min="1" step="1">
         </div>
       </div>
       <p style="font-size:0.78rem; color:var(--gray); margin-top:0.6rem;">
         Flujo rápido: cargar reporte, elegir periodo y rango Desde/Hasta (incluye ambos límites), indicar correlativo inicial, analizar, revisar totales y generar.
       </p>
-      <p style="font-size:0.78rem; color:#9a6700; margin-top:0.35rem;">
-        Generar archivo no implica importación en STARSOFT. Evita importar dos veces la misma cobranza.
-      </p>
-      <p style="font-size:0.78rem; color:#9a6700; margin-top:0.35rem;">
-        TIP_CAMBIO no se completa automáticamente. La importación real en STARSOFT para este punto sigue pendiente de prueba.
-      </p>
+      <div class="always-visible-warnings">
+        <ul>
+          <li>Generar un archivo <strong>no equivale</strong> a importarlo en STARSOFT.</li>
+          <li>No importes dos veces la misma cobranza.</li>
+          <li>Verifica en STARSOFT el correlativo disponible antes de generar.</li>
+          <li>TIP_CAMBIO no se completa automáticamente; STARSOFT puede exigir tipos de cambio cargados para esas fechas.</li>
+        </ul>
+      </div>
     </div>
   </div>
 
@@ -201,7 +245,9 @@
         </div>
       </div>
       <hr class="sep">
-      <h3 style="font-size:0.88rem; font-weight:700; color:#1a3a5c; margin-bottom:0.5rem;">Bancos</h3>
+      <h3 style="font-size:0.88rem; font-weight:700; color:#1a3a5c; margin-bottom:0.5rem;">Bancos
+        <button type="button" class="help-trigger" data-help="Cada banco necesita cuenta contable y medio de pago para generar la línea de banco/caja del asiento." aria-label="Ayuda sobre configuración de bancos">i</button>
+      </h3>
       <p style="font-size:0.78rem; color:var(--gray); margin-bottom:0.75rem;">
         Cada banco del reporte debe tener cuenta contable y medio de pago configurados. Sin eso, la generación queda bloqueada.
       </p>
@@ -279,7 +325,9 @@
 
         <!-- Preview table -->
         <div id="preview-block" style="display:none; margin-top:1rem;">
-          <p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Vista previa (primeros 200 registros):</p>
+          <p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Vista previa de abonos incluidos (primeros 200):
+            <button type="button" class="help-trigger" data-help="La vista previa muestra solo los movimientos que sí entrarán al archivo, según el rango Desde/Hasta." aria-label="Ayuda sobre vista previa">i</button>
+          </p>
           <div style="overflow-x:auto;">
             <table id="preview-table">
               <thead><tr>
@@ -298,6 +346,7 @@
           </div>
           <p style="font-size:0.78rem; color:var(--gray); margin-bottom:0.6rem;">
             Asigna el tipo de cada serie y vuelve a analizar. El cuadre de importes no verifica la clasificación del comprobante.
+            <button type="button" class="help-trigger" data-help="TIP_DOC: 01 corresponde a Factura y 03 a Boleta. FE01 debe ser 01 y BE01 debe ser 03." aria-label="Ayuda sobre tipo de documento">i</button>
           </p>
           <div style="overflow-x:auto;">
             <table id="series-table" style="font-size:0.83rem; width:100%; border-collapse:collapse;">
@@ -305,8 +354,8 @@
                 <tr>
                   <th>Serie</th>
                   <th>Tipo actual</th>
-                  <th style="text-align:right;">Cant.</th>
-                  <th style="text-align:right;">Importe</th>
+                  <th style="text-align:right;">Abonos (incl./rep.)</th>
+                  <th style="text-align:right;">Importe (incl./rep.)</th>
                   <th>Fuente</th>
                   <th>Editar</th>
                   <th>Estado</th>
@@ -332,11 +381,13 @@
 
         <!-- Conciliation -->
         <div id="concil-block" style="display:none; margin-top:1.25rem;">
-          <p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliación por banco:</p>
+          <p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliación de asientos:
+            <button type="button" class="help-trigger" data-help="Cada asiento agrupa por fecha de cobro + banco/cuenta + moneda. CUADRADO significa que debe y haber coinciden en importes." aria-label="Ayuda sobre conciliación">i</button>
+          </p>
           <div style="overflow-x:auto;">
             <table class="concil-table" id="concil-table">
               <thead><tr>
-                <th>Banco</th><th>Comprobante</th><th>Cantidad</th>
+                <th>Banco</th><th>N.º de asiento</th><th>Abonos</th><th>Fecha de cobro</th><th>Cuenta contable</th>
                 <th>Débito</th><th>Crédito</th><th>Diferencia</th><th>Estado</th>
               </tr></thead>
               <tbody id="concil-body"></tbody>
@@ -365,6 +416,82 @@
 
 </div><!-- /container -->
 
+<div id="help-popover" class="help-popover" hidden role="tooltip" aria-live="polite"></div>
+
+<div id="guide-modal" class="guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title" aria-describedby="guide-desc">
+  <div class="guide-panel">
+    <div class="guide-header">
+      <div>
+        <h3 id="guide-title">Ayuda y guía de uso</h3>
+        <p id="guide-desc">Guía rápida para preparar, revisar y generar la carga contable antes de importarla en STARSOFT.</p>
+      </div>
+      <button id="btn-close-guide" class="guide-close" type="button">Cerrar</button>
+    </div>
+
+    <details open>
+      <summary>A. Cómo generar una carga</summary>
+      <ul>
+        <li>Carga el reporte original de cancelados ODE.</li>
+        <li>Selecciona periodo y rango de fecha de cobro (Desde/Hasta).</li>
+        <li>Indica el correlativo inicial disponible en STARSOFT.</li>
+        <li>Haz clic en <strong>Analizar archivos</strong>.</li>
+        <li>Revisa fechas, tipo de documento, bancos, cantidades y totales.</li>
+        <li>Genera y descarga el archivo <strong>.xls</strong> para la macro del estudio.</li>
+        <li>Importa el archivo con el procedimiento habitual de STARSOFT.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>B. Qué significa cada campo</summary>
+      <ul>
+        <li><strong>Reporte:</strong> archivo de origen con abonos.</li>
+        <li><strong>Modelo opcional:</strong> valida estructura de columnas; puedes dejarlo vacío si usarás el formato estándar del conversor.</li>
+        <li><strong>Periodo:</strong> mes contable de las cobranzas a registrar.</li>
+        <li><strong>Desde / Hasta:</strong> filtra por fecha de cobro (incluye ambos límites).</li>
+        <li><strong>Correlativo inicial:</strong> siguiente N.º de asiento disponible en STARSOFT.</li>
+        <li><strong>Configuración:</strong> define cuentas, medio de pago por banco y mapeo de series para TIP_DOC.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>C. Cómo interpretar resultados</summary>
+      <ul>
+        <li><strong>Movimientos del reporte:</strong> total leído antes de aplicar fechas.</li>
+        <li><strong>Abonos incluidos:</strong> movimientos que sí entran al archivo.</li>
+        <li><strong>Fuera de rango:</strong> movimientos excluidos por fecha.</li>
+        <li><strong>Excluidos serie 0001:</strong> filas omitidas por regla del proceso.</li>
+        <li><strong>Cantidad de asientos:</strong> asientos que se generarán con el rango elegido.</li>
+        <li><strong>Total incluido vs total del reporte:</strong> ayuda a conciliar qué parte exportarás.</li>
+        <li><strong>Tipo de documento:</strong> origen de TIP_DOC (columna o mapeo) y alertas por conflicto.</li>
+        <li><strong>CUADRADO:</strong> debe y haber coinciden; aun así revisa clasificación y validaciones en STARSOFT.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>D. Casos de uso frecuentes</summary>
+      <ul>
+        <li>Carga diaria, semanal o mensual: cambia el rango; cada abono mantiene su fecha individual.</li>
+        <li>Comprobante antiguo cobrado este mes: conserva su fecha de documento y usa fecha de cobro en FEC_REG.</li>
+        <li>Varios abonos de un mismo comprobante: cada abono se conserva con su fecha.</li>
+        <li>Rango que cruza meses: procesa cada mes por separado.</li>
+        <li>Siguiente carga del mes: continúa desde el correlativo disponible.</li>
+        <li>Generar de nuevo un archivo no implica importarlo nuevamente.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>E. Problemas frecuentes</summary>
+      <ul>
+        <li><strong>Banco sin configurar:</strong> completa cuenta contable y medio de pago.</li>
+        <li><strong>TIP_DOC sin resolver o contradictorio:</strong> corrige la serie o el tipo en origen/mapeo y vuelve a analizar.</li>
+        <li><strong>Fecha inválida o faltante:</strong> corrige la fila en el reporte; la generación se bloquea.</li>
+        <li><strong>Rango sin movimientos:</strong> ajusta fechas Desde/Hasta.</li>
+        <li><strong>Tipo de cambio:</strong> el conversor no actualiza TIP_CAMBIO ni consulta asientos existentes en STARSOFT.</li>
+      </ul>
+    </details>
+  </div>
+</div>
+
 <script>
 // ============================================================
 // State
@@ -392,6 +519,7 @@ let nextGenerationRequestId = 1;
 
 // Object URLs for download links — revoked on invalidation
 let activeDownloadUrls = [];
+let activeHelpTrigger = null;
 
 // Sharon's confirmed defaults — single source of truth in the frontend.
 // schema_version:2 tells the server not to re-add deleted banks.
@@ -433,6 +561,123 @@ function normaliseBankName(name) {
 
 function bankDomKey(name) {
   return btoa(unescape(encodeURIComponent(name))).replace(/[^a-zA-Z0-9]/g,'_');
+}
+
+function initGuideModal() {
+  var openBtn = document.getElementById('btn-open-guide');
+  var closeBtn = document.getElementById('btn-close-guide');
+  var modal = document.getElementById('guide-modal');
+  if (!openBtn || !closeBtn || !modal) return;
+
+  function closeModal() {
+    modal.classList.remove('open');
+    openBtn.focus();
+  }
+  function openModal() {
+    modal.classList.add('open');
+    closeBtn.focus();
+  }
+
+  openBtn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', function(ev) {
+    if (ev.target === modal) closeModal();
+  });
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape' && modal.classList.contains('open')) {
+      closeModal();
+    }
+  });
+}
+
+function positionHelpPopover(trigger, popover) {
+  var rect = trigger.getBoundingClientRect();
+  var margin = 10;
+  var top = rect.bottom + 8;
+  var left = rect.left;
+  var maxLeft = window.innerWidth - popover.offsetWidth - margin;
+  if (left > maxLeft) left = Math.max(margin, maxLeft);
+  if (left < margin) left = margin;
+
+  if ((top + popover.offsetHeight) > (window.innerHeight - margin)) {
+    top = rect.top - popover.offsetHeight - 8;
+    if (top < margin) top = margin;
+  }
+  popover.style.left = left + 'px';
+  popover.style.top = top + 'px';
+}
+
+function showHelpPopover(trigger) {
+  var popover = document.getElementById('help-popover');
+  if (!popover || !trigger) return;
+  var text = trigger.getAttribute('data-help') || '';
+  if (!text) return;
+  activeHelpTrigger = trigger;
+  popover.textContent = text;
+  popover.hidden = false;
+  positionHelpPopover(trigger, popover);
+  trigger.setAttribute('aria-expanded', 'true');
+}
+
+function hideHelpPopover() {
+  var popover = document.getElementById('help-popover');
+  if (!popover) return;
+  popover.hidden = true;
+  if (activeHelpTrigger) {
+    activeHelpTrigger.setAttribute('aria-expanded', 'false');
+  }
+  activeHelpTrigger = null;
+}
+
+function initHelpTooltips() {
+  var popover = document.getElementById('help-popover');
+  if (!popover) return;
+  var triggers = Array.from(document.querySelectorAll('.help-trigger'));
+  triggers.forEach(function(btn, idx) {
+    btn.setAttribute('aria-haspopup', 'true');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-controls', 'help-popover');
+  });
+
+  document.addEventListener('mouseover', function(ev) {
+    var trg = ev.target.closest('.help-trigger');
+    if (trg) showHelpPopover(trg);
+  });
+  document.addEventListener('focusin', function(ev) {
+    var trg = ev.target.closest('.help-trigger');
+    if (trg) showHelpPopover(trg);
+  });
+  document.addEventListener('mouseout', function(ev) {
+    var trg = ev.target.closest('.help-trigger');
+    if (!trg || activeHelpTrigger !== trg) return;
+    if (trg.contains(ev.relatedTarget)) return;
+    hideHelpPopover();
+  });
+  document.addEventListener('focusout', function(ev) {
+    var trg = ev.target.closest('.help-trigger');
+    if (!trg || activeHelpTrigger !== trg) return;
+    if (trg.contains(ev.relatedTarget)) return;
+    hideHelpPopover();
+  });
+  document.addEventListener('click', function(ev) {
+    var trg = ev.target.closest('.help-trigger');
+    if (trg) {
+      if (activeHelpTrigger === trg && !popover.hidden) {
+        hideHelpPopover();
+      } else {
+        showHelpPopover(trg);
+      }
+      ev.preventDefault();
+      return;
+    }
+    if (!popover.hidden && !popover.contains(ev.target)) hideHelpPopover();
+  });
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape') hideHelpPopover();
+  });
+  window.addEventListener('resize', function() {
+    if (!popover.hidden && activeHelpTrigger) positionHelpPopover(activeHelpTrigger, popover);
+  });
 }
 
 // ============================================================
@@ -487,6 +732,8 @@ function clearSeriesEditor() {
 document.addEventListener('DOMContentLoaded', async () => {
   buildBanksGrid();
   setCurrentMonth();
+  initGuideModal();
+  initHelpTooltips();
   await loadDefaultConfig();
   setupListeners();
 });
@@ -540,12 +787,12 @@ function buildBankRow(name, cfg) {
     </div>
     <div class="row" style="gap:0.5rem;" id="bank-view-${key}">
       <div class="col">
-        <label style="font-size:0.75rem;">Cuenta contable</label>
+        <label style="font-size:0.75rem;">Cuenta contable <span style="color:var(--gray);">(línea banco/caja)</span></label>
         <p style="font-size:0.88rem;font-weight:600;padding:0.35rem 0;margin:0;font-family:monospace;${!cuentaDisplay?'color:var(--red);':''}">
           ${cuentaDisplay ? escHtml(cfg.cuenta_contable) : '(vac&iacute;a &mdash; requerida)'}</p>
       </div>
       <div class="col">
-        <label style="font-size:0.75rem;">Medio de pago</label>
+        <label style="font-size:0.75rem;">Medio de pago <span style="color:var(--gray);">(campo STARSOFT)</span></label>
         <p style="font-size:0.88rem;font-weight:600;padding:0.35rem 0;margin:0;font-family:monospace;">
           ${escHtml(cfg.medio_pago)||'<span style="color:var(--gray);">(vac&iacute;o)</span>'}</p>
       </div>
@@ -920,6 +1167,7 @@ function renderResults(data) {
   // Type summary
   const ts = data.type_summary || {};
   document.getElementById('type-summary-text').innerHTML =
+    '<strong style="display:block; margin-bottom:0.25rem;">Resumen TIP_DOC de abonos incluidos en rango</strong>' +
     `<span class="tip-01">Facturas (01): ${ts.facturas} &mdash; S/ ${fmt(ts.importe_facturas)}</span> &nbsp;|&nbsp; ` +
     `<span class="tip-03">Boletas (03): ${ts.boletas} &mdash; S/ ${fmt(ts.importe_boletas)}</span> &nbsp;|&nbsp; ` +
     `<span class="tip-unresolved">Sin resolver: ${ts.sin_resolver} &mdash; S/ ${fmt(ts.importe_sin_resolver)}</span>`;
@@ -928,14 +1176,19 @@ function renderResults(data) {
   // Stats
   const st = data.stats || {};
   document.getElementById('stats-block').innerHTML =
-    `Fecha de cobro (origen): ${escHtml(st.fecha_cobro_origen || 'fecha_ingreso')} | ` +
-    `Rango seleccionado: ${escHtml(st.rango_cobro_desde || '-')} a ${escHtml(st.rango_cobro_hasta || '-')} | ` +
-    `Abonos en rango: ${st.abonos_en_rango || 0} | ` +
-    `Asientos: ${st.cantidad_asientos || 0} | ` +
-    `Fuera de rango: ${st.movimientos_fuera_rango || 0} | ` +
-    `Correlativos: ${(st.correlativo_inicial || 0)}-${(st.correlativo_final || 0)} | ` +
-    `Total en rango: S/ ${fmt(st.total_en_rango || 0)} | ` +
-    `Total en reporte: ${st.cantidad_original} | Excluidos (serie 0001): ${st.cantidad_excluida} | Procesados: ${st.cantidad_procesada}`;
+    '<div class="stats-grid">' +
+      '<div class="stats-card"><strong>Movimientos del reporte (antes de fecha)</strong><span>' + (st.cantidad_procesada || 0) + ' abonos</span></div>' +
+      '<div class="stats-card"><strong>Abonos incluidos en carga</strong><span>' + (st.cantidad_en_rango || 0) + ' abonos</span></div>' +
+      '<div class="stats-card"><strong>Movimientos fuera de rango</strong><span>' + (st.cantidad_fuera_rango || 0) + ' abonos</span></div>' +
+      '<div class="stats-card"><strong>Excluidos por serie 0001</strong><span>' + (st.cantidad_excluida || 0) + ' filas</span></div>' +
+      '<div class="stats-card"><strong>Total del reporte (sin 0001)</strong><span>S/ ' + fmt(st.total_procesado || 0) + '</span></div>' +
+      '<div class="stats-card"><strong>Total incluido en carga</strong><span>S/ ' + fmt(st.total_en_rango || 0) + '</span></div>' +
+      '<div class="stats-card"><strong>Total fuera de rango</strong><span>S/ ' + fmt(st.total_fuera_rango || 0) + '</span></div>' +
+      '<div class="stats-card"><strong>Asientos a generar</strong><span>' + (st.cantidad_asientos || 0) + ' asientos</span></div>' +
+      '<div class="stats-card"><strong>Correlativos de asientos</strong><span>' + ((st.correlativo_inicial || 0)) + ' - ' + ((st.correlativo_final || 0)) + '</span></div>' +
+      '<div class="stats-card"><strong>Rango seleccionado</strong><span>' + escHtml(st.rango_cobro_desde || '-') + ' a ' + escHtml(st.rango_cobro_hasta || '-') + '</span></div>' +
+    '</div>' +
+    '<p class="stats-note">Fecha de cobro usada por el conversor: <strong>' + escHtml(st.fecha_cobro_origen || 'fecha_ingreso') + '</strong>. Los límites Desde/Hasta son inclusivos.</p>';
   document.getElementById('stats-block').style.display = 'block';
 
   // Preview
@@ -965,11 +1218,13 @@ function renderSeriesTable(seriesAll) {
       ? s.tipos.map(t => t==='01'?'<span class="tip-01">01 Factura</span>':t==='03'?'<span class="tip-03">03 Boleta</span>':escHtml(t)).join(', ')
       : '&mdash;';
 
-    const estadoBadge = s.conflicto
-      ? '<span class="badge badge-red">Conflicto</span>'
-      : s.resuelto
-        ? '<span class="badge badge-green">Resuelto</span>'
-        : '<span class="badge badge-orange">Sin resolver</span>';
+    const estadoBadge = s.conteo === 0
+      ? '<span class="badge badge-gray">Fuera de rango</span>'
+      : s.conflicto
+        ? '<span class="badge badge-red">Conflicto</span>'
+        : s.resuelto
+          ? '<span class="badge badge-green">Resuelto</span>'
+          : '<span class="badge badge-orange">Sin resolver</span>';
 
     // fuente display with prefix note
     var fuenteLabel = '<span style="font-size:0.75rem; color:var(--text-muted);">&mdash;</span>';
@@ -994,8 +1249,8 @@ function renderSeriesTable(seriesAll) {
     return '<tr>' +
       '<td style="font-family:monospace; font-weight:600;">' + escHtml(s.serie) + '</td>' +
       '<td>' + tipoLabel + '</td>' +
-      '<td style="text-align:right;">' + s.conteo + '</td>' +
-      '<td style="text-align:right;">S/ ' + fmt(s.importe) + '</td>' +
+      '<td style="text-align:right;">' + s.conteo + ' / ' + (s.conteo_total || 0) + '</td>' +
+      '<td style="text-align:right;">S/ ' + fmt(s.importe) + ' / S/ ' + fmt(s.importe_total || 0) + '</td>' +
       '<td>' + fuenteLabel + '</td>' +
       '<td>' + sel + '</td>' +
       '<td>' + estadoBadge + '</td>' +
@@ -1160,9 +1415,9 @@ function renderDownloads(data) {
   });
 
   if (summ.conciliacion && summ.conciliacion.length) {
-    body.innerHTML += '<hr class="sep"><p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliacion:</p>' +
+    body.innerHTML += '<hr class="sep"><p style="font-size:0.82rem; font-weight:600; margin-bottom:0.4rem;">Conciliación de asientos (agrupado por fecha de cobro + banco/cuenta + moneda):</p>' +
       '<div style="overflow-x:auto;"><table class="concil-table"><thead><tr>' +
-      '<th>Banco</th><th>Comprobante</th><th>Cantidad</th><th>Debito</th><th>Credito</th><th>Diferencia</th><th>Estado</th>' +
+      '<th>Banco</th><th>N.º de asiento</th><th>Abonos</th><th>Fecha de cobro</th><th>Cuenta contable</th><th>Debito</th><th>Credito</th><th>Diferencia</th><th>Estado</th>' +
       '</tr></thead><tbody>' +
       summ.conciliacion.map(function(r) {
         var isTotal = r.banco === 'TOTAL';
@@ -1171,6 +1426,7 @@ function renderDownloads(data) {
           : '<span class="badge badge-orange">REVISAR</span>';
         return '<tr class="' + (isTotal?'concil-total':'') + '">' +
           '<td>' + escHtml(r.banco) + '</td><td>' + escHtml(r.comprobante) + '</td><td>' + r.cantidad + '</td>' +
+          '<td>' + (r.fecha_cobro ? escHtml(r.fecha_cobro) : '&mdash;') + '</td><td>' + (r.cuenta_contable ? escHtml(r.cuenta_contable) : '&mdash;') + '</td>' +
           '<td>S/ ' + fmt(r.debito) + '</td><td>S/ ' + fmt(r.credito) + '</td>' +
           '<td>S/ ' + fmt(r.diferencia) + '</td><td>' + estBadge + '</td></tr>';
       }).join('') +

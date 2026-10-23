@@ -35,6 +35,7 @@ from transformer import (  # noqa: E402
     ensure_no_nan,
     export_carga_workbook,
     export_carga_xls,
+    filter_movements_by_collection_range,
     get_unconfigured_banks,
     normalize_bank_name,
     normalize_bancos_keys,
@@ -234,13 +235,27 @@ def _build_analyze_response(
         correlativo_inicial=correlativo_inicial,
     )
 
-    tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(processed, config)
+    included = processed
+    excluded_by_date = processed.iloc[0:0].copy()
+    if not processed.empty:
+        try:
+            included, excluded_by_date, _, _ = filter_movements_by_collection_range(
+                processed,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+            )
+        except ValueError:
+            # Keep full processed dataset so errors are still rendered consistently.
+            included = processed
+            excluded_by_date = processed.iloc[0:0].copy()
+
+    tip_doc_series, tip_doc_obs = resolve_tip_doc_for_df(included, config)
 
     # Preview (up to 200 rows)
     preview: List[Dict[str, Any]] = []
     fecha_col = COBRO_DATE_COLUMN
 
-    for (idx, row), tip in zip(processed.head(200).iterrows(), tip_doc_series.head(200)):
+    for (idx, row), tip in zip(included.head(200).iterrows(), tip_doc_series.head(200)):
         fecha_val = ''
         if fecha_col and fecha_col in row.index:
             fv = row[fecha_col]
@@ -262,8 +277,8 @@ def _build_analyze_response(
         })
 
     # Type summary
-    ic = processed['importe_cancelado'] if 'importe_cancelado' in processed.columns else pd.Series(
-        [0.0] * len(processed), index=processed.index
+    ic = included['importe_cancelado'] if 'importe_cancelado' in included.columns else pd.Series(
+        [0.0] * len(included), index=included.index
     )
     type_summary = {
         'facturas': int((tip_doc_series == '01').sum()),
@@ -280,12 +295,18 @@ def _build_analyze_response(
     serie_map = config.get('serie_map', {}) or {}
     has_explicit_col = 'tipo_comprobante' in processed.columns
     if 'serie' in processed.columns:
-        ic_series = processed['importe_cancelado'] if 'importe_cancelado' in processed.columns else pd.Series(
+        ic_series_total = processed['importe_cancelado'] if 'importe_cancelado' in processed.columns else pd.Series(
             [0.0] * len(processed), index=processed.index
         )
+        ic_series_included = included['importe_cancelado'] if 'importe_cancelado' in included.columns else pd.Series(
+            [0.0] * len(included), index=included.index
+        )
         for serie in sorted(processed['serie'].astype(str).unique()):
-            mask = processed['serie'].astype(str) == serie
-            tipos_raw = list(tip_doc_series[mask].unique())
+            mask_total = processed['serie'].astype(str) == serie
+            mask_included = included['serie'].astype(str) == serie if 'serie' in included.columns else pd.Series(
+                [False] * len(included), index=included.index
+            )
+            tipos_raw = list(tip_doc_series[mask_included].unique())
             tipos = [t for t in tipos_raw if t]
             resuelto = bool(tipos and all(t in ('01', '03') for t in tipos))
             conflicto = bool(len(tipos) > 1)
@@ -294,7 +315,7 @@ def _build_analyze_response(
             fuente = ''
             fuente_clave = ''
             if resuelto or conflicto:
-                serie_rows = processed[mask]
+                serie_rows = included[mask_included]
                 if has_explicit_col and serie_rows['tipo_comprobante'].astype(str).str.strip().ne('').any():
                     fuente = 'columna'
                 else:
@@ -314,8 +335,10 @@ def _build_analyze_response(
                             fuente = 'mapeo'
                             fuente_clave = prefix_key
 
-            conteo = int(mask.sum())
-            importe_serie = round(float(ic_series[mask].sum()), 2)
+            conteo_total = int(mask_total.sum())
+            conteo_incluido = int(mask_included.sum())
+            importe_serie_total = round(float(ic_series_total[mask_total].sum()), 2)
+            importe_serie_incluido = round(float(ic_series_included[mask_included].sum()), 2)
 
             series_all.append({
                 'serie': serie,
@@ -325,10 +348,12 @@ def _build_analyze_response(
                 'fuente': fuente,
                 'fuente_clave': fuente_clave,
                 'fuente_es_prefijo': bool(fuente == 'mapeo' and fuente_clave and fuente_clave.strip().upper() != serie.strip().upper()),
-                'conteo': conteo,
-                'importe': importe_serie,
+                'conteo': conteo_incluido,
+                'importe': importe_serie_incluido,
+                'conteo_total': conteo_total,
+                'importe_total': importe_serie_total,
             })
-            if not resuelto:
+            if conteo_incluido > 0 and not resuelto:
                 unresolved_series.append(serie)
 
     # Unconfigured banks
@@ -364,9 +389,21 @@ def _build_analyze_response(
         'cantidad_original': len(raw),
         'cantidad_excluida': len(excluded),
         'cantidad_procesada': len(processed),
+        'cantidad_en_rango': len(included),
+        'cantidad_fuera_rango': len(excluded_by_date),
         'total_procesado': round(
             float(processed['importe_cancelado'].sum())
             if 'importe_cancelado' in processed.columns else 0.0,
+            2,
+        ),
+        'total_en_rango': round(
+            float(included['importe_cancelado'].sum())
+            if 'importe_cancelado' in included.columns else 0.0,
+            2,
+        ),
+        'total_fuera_rango': round(
+            float(excluded_by_date['importe_cancelado'].sum())
+            if 'importe_cancelado' in excluded_by_date.columns else 0.0,
             2,
         ),
         'fecha_cobro_origen': COBRO_DATE_COLUMN,
@@ -375,7 +412,7 @@ def _build_analyze_response(
         'abonos_en_rango': generation_preview.get('abonos_en_rango', 0),
         'movimientos_fuera_rango': generation_preview.get('movimientos_fuera_rango', 0),
         'cantidad_asientos': generation_preview.get('cantidad_asientos', 0),
-        'total_en_rango': generation_preview.get('total_en_rango', 0.0),
+        'total_asientos_rango': generation_preview.get('total_en_rango', 0.0),
         'correlativo_inicial': generation_preview.get('correlativo_inicial', correlativo_inicial),
         'correlativo_final': generation_preview.get('correlativo_final', correlativo_inicial - 1),
     }
