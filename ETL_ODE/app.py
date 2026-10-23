@@ -230,6 +230,15 @@ class ConversorODEApp(tk.Tk):
         tk.Entry(row4, width=12, textvariable=self.fecha_hasta_var, font=('Segoe UI', 10), relief='solid').pack(side='left', padx=(0, 10))
         tk.Label(row4, text='Correlativo inicial', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
         tk.Entry(row4, width=8, textvariable=self.correlativo_inicial_var, font=('Segoe UI', 10), relief='solid').pack(side='left')
+        tk.Label(
+            frm,
+            text='Flujo: cargar reporte, seleccionar periodo y rango cobro (Desde/Hasta inclusivo), indicar correlativo inicial, analizar, revisar totales y generar.',
+            bg=_BG_WHITE,
+            fg='#5b7085',
+            font=('Segoe UI', 9),
+            anchor='w',
+            justify='left',
+        ).pack(fill='x', pady=(6, 0))
 
     def _build_config_section(self) -> None:
         frm = self._section('Configuración contable')
@@ -861,6 +870,12 @@ class ConversorODEApp(tk.Tk):
             f'1. Usar "Pasar ventas y clientes a formato TXT"\n'
             f'   y seleccionar el archivo .xls anterior.\n'
             f'2. Cargar el TXT generado en el módulo contable.\n\n'
+            f'Importante:\n'
+            f'- Generar el archivo no significa que ya fue importado en STARSOFT.\n'
+            f'- No importes dos veces la misma cobranza.\n\n'
+            f'TIP_CAMBIO:\n'
+            f'- Se mantiene según la configuración vigente.\n'
+            f'- La importación real en STARSOFT para este punto sigue pendiente de prueba.\n\n'
             f'Reporte de validación (solo revisión):\n{result["report_file"]}')
 
     # ------------------------------------------------------------------

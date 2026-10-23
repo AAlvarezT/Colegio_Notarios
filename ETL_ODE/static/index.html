@@ -147,6 +147,15 @@
           <input type="number" id="inp-correlativo-inicial" value="1" min="1" step="1">
         </div>
       </div>
+      <p style="font-size:0.78rem; color:var(--gray); margin-top:0.6rem;">
+        Flujo rápido: cargar reporte, elegir periodo y rango Desde/Hasta (incluye ambos límites), indicar correlativo inicial, analizar, revisar totales y generar.
+      </p>
+      <p style="font-size:0.78rem; color:#9a6700; margin-top:0.35rem;">
+        Generar archivo no implica importación en STARSOFT. Evita importar dos veces la misma cobranza.
+      </p>
+      <p style="font-size:0.78rem; color:#9a6700; margin-top:0.35rem;">
+        TIP_CAMBIO no se completa automáticamente. La importación real en STARSOFT para este punto sigue pendiente de prueba.
+      </p>
     </div>
   </div>
 
@@ -919,7 +928,7 @@ function renderResults(data) {
   // Stats
   const st = data.stats || {};
   document.getElementById('stats-block').innerHTML =
-    `Fecha operativa (origen): ${escHtml(st.fecha_cobro_origen || 'fecha_ingreso')} (pendiente validar significado con proveedor/Sharon) | ` +
+    `Fecha de cobro (origen): ${escHtml(st.fecha_cobro_origen || 'fecha_ingreso')} | ` +
     `Rango seleccionado: ${escHtml(st.rango_cobro_desde || '-')} a ${escHtml(st.rango_cobro_hasta || '-')} | ` +
     `Abonos en rango: ${st.abonos_en_rango || 0} | ` +
     `Asientos: ${st.cantidad_asientos || 0} | ` +

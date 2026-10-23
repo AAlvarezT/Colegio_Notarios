@@ -75,13 +75,17 @@ Pasos:
 
 ## Consideraciones del proceso
 - Las series `0001` se excluyen automáticamente.
-- Para el procesamiento semanal, la fecha operativa usada actualmente es la columna `fecha_ingreso`.
-  > Nota: el significado funcional exacto de `fecha_ingreso` como fecha de abono/cobro confirmado sigue pendiente de validación con Sharon/proveedor.
+- `FEC_REG` utiliza la columna `fecha_ingreso` de cada abono.
+- Cada abono conserva su propia fecha de cobro, incluso cuando corresponde al mismo comprobante.
+- El rango **Desde/Hasta** define qué movimientos se incluyen y ambos límites son inclusivos.
 - Los asientos se agrupan por **fecha de cobro + banco/caja + cuenta contable + moneda**.
 - No se mezclan cobros de días distintos en un mismo asiento.
 - `OTROS` se registra como cobro en efectivo/Caja en la cuenta `10100001`, sin medio de pago.
 - Si el rango seleccionado mezcla más de un mes, la generación se bloquea para procesar cada mes por separado.
+- Los periodos que cruzan meses se procesan por separado.
+- La frecuencia de entrega (semanal, quincenal, etc.) puede cambiar sin modificar el código: solo cambia el rango seleccionado.
 - `TIP_CAMBIO` se mantiene según la lógica vigente; STARSOFT puede requerir tipos de cambio registrados para las fechas de asiento.
+- La importación real en STARSOFT con validación de tipo de cambio sigue pendiente de prueba.
 - Los archivos resultantes se guardan en la carpeta `salida`.
 - No se debe cerrar el programa mientras está procesando.
 - El archivo original no se modifica.
@@ -104,7 +108,6 @@ El ejecutable se genera en `dist`.
 ## Notas
 - Si ya existe un archivo de salida, se agrega fecha y hora al nombre.
 - El log técnico queda en `logs/conversor_ode.log`.
-- Los espacios en blanco observados en la herramienta del estudio no han sido reproducidos con archivos sintéticos; pendiente de validar con un reporte real de Sharon que incluya boletas.
 
 ---
 
@@ -148,10 +151,12 @@ Ver `.env.example` para referencia:
 6. Haz clic en **"Analizar archivos"**: revisa errores, advertencias, rango/abonos/asientos/correlativos y la vista previa.
 7. Si hay series sin resolver: selecciona **01 (Factura)** o **03 (Boleta)** para cada una y haz clic en **"Aplicar mapeo y re-analizar"**.
 8. Una vez que el estado muestre **"LISTO PARA GENERAR"**, haz clic en **"Generar carga"**.
-9. Descarga los archivos:
+9. Verifica en el resumen: rango aplicado, cantidad de abonos, total incluido y correlativos.
+10. Descarga los archivos:
    - 🟢 **CARGA_ODE_YYYYMM.xls** — este es el archivo para la macro del estudio.
    - **CARGA_ODE_YYYYMM.xlsx** — copia de respaldo.
    - **REPORTE_ODE_YYYYMM.xlsx** — solo revisión interna, no cargarlo en la macro.
+11. Importa el TXT en STARSOFT una sola vez por cobranza. Generar el archivo en ETL_ODE **no** significa que ya fue importado.
 
 ### Exportar / importar configuración
 
@@ -183,5 +188,3 @@ python -m pytest tests/ -q
 
 **Resultados con datos sintéticos** (sin archivo real): 20/20 tests web pasan.  
 **Suite completa**: 138 passed, 1 skipped.
-
-**Pendiente de validar con archivo real de Sharon**: comportamiento con reportes que mezclen facturas y boletas reales, incluyendo formatos de fecha y RUC no estándar.
