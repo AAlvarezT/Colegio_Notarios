@@ -8,6 +8,7 @@ import io
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 # Configure env vars BEFORE importing server so auth is active
 os.environ['SECRET_KEY'] = 'test-secret-key-do-not-use-in-prod'
@@ -32,16 +33,16 @@ def _make_xlsx_bytes(with_tipo_col: bool = True) -> bytes:
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco']
+    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco']
     if with_tipo_col:
         cols.append('Tipo Comprobante')
     ws.append(cols)
     rows = [
-        ('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), 'INTERBANK', '01'),
-        ('20222222222', 'BE01', '0000002',  50.0, datetime(2026, 8, 11), 'INTERBANK', '03'),
+        ('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK', '01'),
+        ('20222222222', 'BE01', '0000002',  50.0, datetime(2026, 8, 11), datetime(2026, 8, 11), 'INTERBANK', '03'),
     ]
     for r in rows:
-        ws.append(r[:6] + ((r[6],) if with_tipo_col else ()))
+        ws.append(r[:7] + ((r[7],) if with_tipo_col else ()))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -53,8 +54,8 @@ def _make_xlsx_with_unknown_serie(serie: str = 'ZZ99') -> bytes:
     from datetime import datetime
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco'])
-    ws.append(('20111111111', serie, '0000001', 100.0, datetime(2026, 8, 10), 'INTERBANK'))
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco'])
+    ws.append(('20111111111', serie, '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK'))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -66,8 +67,29 @@ def _make_xlsx_with_conflict() -> bytes:
     from datetime import datetime
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
-    ws.append(('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), 'INTERBANK', '01'))
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
+    ws.append(('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK', '01'))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+def _make_xlsx_with_fixed_series_column_conflict() -> bytes:
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
+    ws.append(('20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 10), datetime(2026, 8, 10), 'INTERBANK', '03'))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+def _make_xlsx_range_fixture() -> bytes:
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco', 'Tipo Comprobante'])
+    ws.append(['20111111111', 'FE01', '0000001', 100.0, datetime(2026, 8, 5), datetime(2026, 8, 5), 'INTERBANK', '01'])
+    ws.append(['20222222222', 'BE01', '0000002', 50.0, datetime(2026, 8, 20), datetime(2026, 8, 20), 'INTERBANK', '03'])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -103,28 +125,40 @@ def _auth_cookies() -> dict:
 
 def _analyze(xlsx_bytes: bytes, config: dict | None = None, year: str = '2026',
              month: str = '8', fecha_calculo: str = 'fecha_cancelacion',
+             fecha_desde: str | None = None, fecha_hasta: str | None = None,
              cookies: dict | None = None) -> tuple:
     cookies = cookies or _auth_cookies()
     cfg = config or _default_config()
+    data = {'year': year, 'month': month, 'fecha_calculo': fecha_calculo,
+            'config_json': json.dumps(cfg)}
+    if fecha_desde is not None:
+        data['fecha_desde'] = fecha_desde
+    if fecha_hasta is not None:
+        data['fecha_hasta'] = fecha_hasta
     res = client.post(
         '/api/analyze',
         files={'reporte': ('reporte.xlsx', xlsx_bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')},
-        data={'year': year, 'month': month, 'fecha_calculo': fecha_calculo,
-              'config_json': json.dumps(cfg)},
+        data=data,
         cookies=cookies,
     )
     return res, res.json() if res.headers.get('content-type', '').startswith('application/json') else {}
 
 
 def _generate(xlsx_bytes: bytes, config: dict | None = None, year: str = '2026',
-              month: str = '8', cookies: dict | None = None) -> tuple:
+              month: str = '8', cookies: dict | None = None,
+              fecha_desde: str | None = None, fecha_hasta: str | None = None) -> tuple:
     cookies = cookies or _auth_cookies()
     cfg = config or _default_config()
+    data = {'year': year, 'month': month, 'fecha_calculo': 'fecha_cancelacion',
+            'config_json': json.dumps(cfg)}
+    if fecha_desde is not None:
+        data['fecha_desde'] = fecha_desde
+    if fecha_hasta is not None:
+        data['fecha_hasta'] = fecha_hasta
     res = client.post(
         '/api/generate',
         files={'reporte': ('reporte.xlsx', xlsx_bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')},
-        data={'year': year, 'month': month, 'fecha_calculo': 'fecha_cancelacion',
-              'config_json': json.dumps(cfg)},
+        data=data,
         cookies=cookies,
     )
     return res, res.json() if res.headers.get('content-type', '').startswith('application/json') else {}
@@ -280,6 +314,67 @@ def test_generate_isolation():
     for res, data in results:
         assert res.status_code == 200, data
         assert len(data.get('files', [])) == 3
+
+
+def test_generate_filters_by_range_only_included_movements():
+    xlsx = _make_xlsx_range_fixture()
+
+    res, data = _generate(
+        xlsx,
+        config=_default_config(serie_map={}),
+        fecha_desde='2026-08-01',
+        fecha_hasta='2026-08-10',
+    )
+    assert res.status_code == 200, data
+    summary = data['summary']
+    assert summary['total_reporte'] == 150.0
+    assert summary['total_procesado'] == 100.0
+    assert summary['cantidad_reporte_total'] == 2
+    assert summary['cantidad_procesada'] == 1
+    assert summary['cantidad_fuera_rango'] == 1
+    conc = summary['conciliacion']
+    assert conc[0]['fecha_cobro'] == '05/08/2026'
+    assert conc[0]['cuenta_contable'] == '10100011'
+    assert conc[0]['cantidad'] == 1
+    assert len(data.get('files', [])) == 3
+
+
+def test_analyze_preview_and_type_summary_only_include_range():
+    xlsx = _make_xlsx_range_fixture()
+    res, data = _analyze(
+        xlsx,
+        config=_default_config(serie_map={}),
+        fecha_desde='2026-08-01',
+        fecha_hasta='2026-08-10',
+    )
+    assert res.status_code == 200, data
+    preview = data['preview']
+    assert len(preview) == 1
+    assert preview[0]['documento'] == '0000001'
+    ts = data['type_summary']
+    assert ts['facturas'] == 1
+    assert ts['boletas'] == 0
+    assert data['stats']['cantidad_procesada'] == 2
+    assert data['stats']['cantidad_en_rango'] == 1
+    assert data['stats']['cantidad_fuera_rango'] == 1
+    assert data['stats']['total_en_rango'] == 100.0
+    assert data['stats']['total_fuera_rango'] == 50.0
+
+
+def test_generate_blocks_when_fixed_series_rule_conflicts_by_map():
+    xlsx = _make_xlsx_bytes(with_tipo_col=False)
+    cfg = _default_config(serie_map={'FE01': '03', 'BE01': '01'})
+    res, data = _generate(xlsx, config=cfg)
+    assert res.status_code == 422
+    detail = str(data.get('detail', ''))
+    assert 'FE01' in detail and 'esperado 01' in detail
+
+
+def test_analyze_reports_fixed_series_column_conflict():
+    xlsx = _make_xlsx_with_fixed_series_column_conflict()
+    res, data = _analyze(xlsx, config=_default_config(serie_map={}))
+    assert res.status_code == 200
+    assert any('FE01' in e and 'tipo_comprobante=03' in e for e in data.get('errors', []))
 
 
 def test_response_no_nan_no_paths():
@@ -460,4 +555,3 @@ with patch.object(Path, 'mkdir', guarded_mkdir):
     assert 'IMPORTS_OK' in result.stdout, (
         f"Expected IMPORTS_OK in stdout:\n{result.stdout}\n{result.stderr}"
     )
-

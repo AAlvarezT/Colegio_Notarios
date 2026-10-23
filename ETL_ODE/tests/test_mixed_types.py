@@ -40,6 +40,7 @@ def _make_df(**overrides) -> pd.DataFrame:
         'documento': ['0000001', '0000002'],
         'importe_cancelado': [100.0, 50.0],
         'banco': ['INTERBANK', 'INTERBANK'],
+        'fecha_ingreso': [_DATE, _DATE],
         'fecha_cancelacion': [_DATE, _DATE],
     }
     base.update(overrides)
@@ -372,6 +373,7 @@ def test_exclusion_serie_0001_preserved():
         'documento': ['0001', '0000002', '0000003'],
         'importe_cancelado': [200.0, 100.0, 50.0],
         'banco': ['INTERBANK', 'INTERBANK', 'INTERBANK'],
+        'fecha_ingreso': [_DATE, _DATE, _DATE],
         'fecha_cancelacion': [_DATE, _DATE, _DATE],
     })
     _, excluded, processed = split_ode_rows(df)
@@ -446,7 +448,7 @@ def _make_synthetic_xlsx(path: Path, with_tipo_col: bool = True) -> None:
     import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
-    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Cancelacion', 'Banco']
+    cols = ['NumRuc', 'Serie', 'Documento', 'Importe Cancelado', 'Fecha Ingreso', 'Fecha Cancelacion', 'Banco']
     if with_tipo_col:
         cols.append('Tipo Comprobante')
     ws.append(cols)
@@ -456,7 +458,17 @@ def _make_synthetic_xlsx(path: Path, with_tipo_col: bool = True) -> None:
         ('20333333333', 'FE01', '0000003',  75.0, datetime(2026, 8, 12), 'OTROS',     '01'),
     ]
     for r in rows:
-        ws.append(r[:6] + ((r[6],) if with_tipo_col else ()))
+        if with_tipo_col:
+            if len(r) >= 8:
+                ws.append(r[:7] + (r[7],))
+            else:
+                # Backward-compatible fixture format: no explicit fecha_ingreso.
+                ws.append((r[0], r[1], r[2], r[3], r[4], r[4], r[5], r[6]))
+        else:
+            if len(r) >= 8:
+                ws.append(r[:7])
+            else:
+                ws.append((r[0], r[1], r[2], r[3], r[4], r[4], r[5]))
     wb.save(str(path))
 
 
@@ -504,6 +516,7 @@ def test_accounting_balance_mixed_multibank():
         'documento': ['001', '002', '003'],
         'importe_cancelado': [100.0, 50.0, 75.0],
         'banco': ['INTERBANK', 'BBVA CONTINENTAL', 'OTROS'],
+        'fecha_ingreso': [_DATE, _DATE, _DATE],
         'fecha_cancelacion': [_DATE, _DATE, _DATE],
     })
     carga = build_carga_dataframe(df, periodo='202608', config=_cfg_serie_map())
@@ -631,4 +644,3 @@ def test_invalidate_increments_version_when_not_valid():
         '_invalidate_analysis must increment version even during an active analysis'
     )
     app.destroy()
-

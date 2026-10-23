@@ -10,8 +10,11 @@ import tkinter as tk
 import pandas as pd
 
 from transformer import (
+    COBRO_DATE_COLUMN,
+    build_generation_preview,
     DEFAULT_CONFIG,
     configure_file_logging,
+    filter_movements_by_collection_range,
     get_app_dir,
     get_bank_default_config,
     load_config,
@@ -60,7 +63,9 @@ class ConversorODEApp(tk.Tk):
         self.output_dir = tk.StringVar(value='')
         self.year_var = tk.StringVar(value='2026')
         self.month_var = tk.StringVar(value='08')
-        self.date_selector = tk.StringVar(value='fecha_cancelacion')
+        self.fecha_desde_var = tk.StringVar(value='01/08/2026')
+        self.fecha_hasta_var = tk.StringVar(value='31/08/2026')
+        self.correlativo_inicial_var = tk.StringVar(value='1')
         self.config = load_config(APP_DIR / 'config.json')
         self.analysis_df = pd.DataFrame()
         self.last_result: dict = {}
@@ -220,10 +225,21 @@ class ConversorODEApp(tk.Tk):
         ttk.Combobox(row4, textvariable=self.month_var,
                      values=[f'{i:02d}' for i in range(1, 13)],
                      width=5, state='readonly').pack(side='left', padx=(0, 14))
-        tk.Label(row4, text='Fecha registro', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
-        ttk.Combobox(row4, textvariable=self.date_selector,
-                     values=['fecha_cancelacion', 'fecha_emi', 'ultimo_dia_mes'],
-                     width=18, state='readonly').pack(side='left')
+        tk.Label(row4, text='Cobro desde', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
+        tk.Entry(row4, width=12, textvariable=self.fecha_desde_var, font=('Segoe UI', 10), relief='solid').pack(side='left', padx=(0, 10))
+        tk.Label(row4, text='Cobro hasta', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
+        tk.Entry(row4, width=12, textvariable=self.fecha_hasta_var, font=('Segoe UI', 10), relief='solid').pack(side='left', padx=(0, 10))
+        tk.Label(row4, text='Correlativo inicial', bg=_BG_WHITE, fg='#0d2140').pack(side='left', padx=(0, 4))
+        tk.Entry(row4, width=8, textvariable=self.correlativo_inicial_var, font=('Segoe UI', 10), relief='solid').pack(side='left')
+        tk.Label(
+            frm,
+            text='Flujo: cargar reporte, seleccionar periodo y rango cobro (Desde/Hasta inclusivo), indicar correlativo inicial, analizar, revisar totales y generar.',
+            bg=_BG_WHITE,
+            fg='#5b7085',
+            font=('Segoe UI', 9),
+            anchor='w',
+            justify='left',
+        ).pack(fill='x', pady=(6, 0))
 
     def _build_config_section(self) -> None:
         frm = self._section('Configuración contable')
@@ -394,7 +410,14 @@ class ConversorODEApp(tk.Tk):
 
     def _bind_invalidation_traces(self) -> None:
         """Invalidate stale analysis when file, period, or date criterion changes."""
-        for var in (self.file_label, self.year_var, self.month_var, self.date_selector):
+        for var in (
+            self.file_label,
+            self.year_var,
+            self.month_var,
+            self.fecha_desde_var,
+            self.fecha_hasta_var,
+            self.correlativo_inicial_var,
+        ):
             var.trace_add('write', self._invalidate_analysis)
 
     def _invalidate_analysis(self, *_: object) -> None:
@@ -486,7 +509,14 @@ class ConversorODEApp(tk.Tk):
             messagebox.showwarning('Archivo requerido', 'Debe seleccionar un reporte de cancelados.')
             return
         periodo = f"{int(self.year_var.get()):04d}{self.month_var.get()}"
-        fecha_calculo = self.date_selector.get()
+        fecha_calculo = 'fecha_cancelacion'
+        fecha_desde = self.fecha_desde_var.get().strip()
+        fecha_hasta = self.fecha_hasta_var.get().strip()
+        try:
+            correlativo_inicial = int(self.correlativo_inicial_var.get() or '1')
+        except ValueError:
+            messagebox.showwarning('Correlativo inválido', 'El correlativo inicial debe ser un número entero.')
+            return
         cfg = self._collect_config()
         self._analysis_valid = False
         self._analysis_version += 1
@@ -495,14 +525,49 @@ class ConversorODEApp(tk.Tk):
         self.status_label.config(text='Analizando reporte...')
         threading.Thread(
             target=self._analyze_worker,
-            args=(source_path, periodo, fecha_calculo, cfg, current_version),
+            args=(source_path, periodo, fecha_calculo, cfg, current_version, fecha_desde, fecha_hasta, correlativo_inicial),
             daemon=True).start()
 
-    def _analyze_worker(self, source_path: str, periodo: str, fecha_calculo: str, cfg: dict, version: int) -> None:
+    def _analyze_worker(
+        self,
+        source_path: str,
+        periodo: str,
+        fecha_calculo: str,
+        cfg: dict,
+        version: int,
+        fecha_desde: str,
+        fecha_hasta: str,
+        correlativo_inicial: int,
+    ) -> None:
         try:
             raw, excluded, processed = analyze_source(source_path)
-            errors, warnings, info = validate_report(processed, periodo=periodo, fecha_calculo=fecha_calculo, config=cfg)
+            errors, warnings, info = validate_report(
+                processed,
+                periodo=periodo,
+                fecha_calculo=fecha_calculo,
+                config=cfg,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+                correlativo_inicial=correlativo_inicial,
+            )
+            included_df, _, _, _ = filter_movements_by_collection_range(
+                processed,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+            )
             tip_docs, tip_doc_obs = resolve_tip_doc_for_df(processed, cfg)
+            tip_docs_included, _ = resolve_tip_doc_for_df(included_df, cfg)
+
+            generation_preview = {}
+            if not errors:
+                generation_preview = build_generation_preview(
+                    processed,
+                    periodo=periodo,
+                    config={**DEFAULT_CONFIG, **cfg},
+                    fecha_desde=fecha_desde,
+                    fecha_hasta=fecha_hasta,
+                    correlativo_inicial=correlativo_inicial,
+                )
 
             new_banks: list[str] = []
             if 'banco' in processed.columns:
@@ -516,10 +581,13 @@ class ConversorODEApp(tk.Tk):
                 'raw': raw, 'processed': processed, 'excluded': excluded,
                 'errors': errors, 'warnings': warnings, 'info': info,
                 'tip_docs': tip_docs, 'tip_doc_obs': tip_doc_obs,
+                'tip_docs_included': tip_docs_included,
+                'included': included_df,
+                'generation_preview': generation_preview,
             }
             self.after(0, lambda: self._refresh_analysis(
                 raw, excluded, processed, errors, warnings, info, new_banks,
-                tip_docs, tip_doc_obs, version=version))
+                tip_docs, tip_doc_obs, included_df=included_df, tip_docs_included=tip_docs_included, version=version))
         except Exception as exc:
             self.after(0, lambda: messagebox.showerror('Error', str(exc)))
             self.after(0, lambda: self.status_label.config(text='ERROR AL ANALIZAR'))
@@ -531,6 +599,8 @@ class ConversorODEApp(tk.Tk):
                           warnings: list, info: list, new_banks: list,
                           tip_docs: 'pd.Series | None' = None,
                           tip_doc_obs: 'list | None' = None,
+                          included_df: 'pd.DataFrame | None' = None,
+                          tip_docs_included: 'pd.Series | None' = None,
                           version: int | None = None) -> None:
         # Discard stale results from a superseded analysis
         if version is not None and version != self._analysis_version:
@@ -551,9 +621,12 @@ class ConversorODEApp(tk.Tk):
             warnings = list(warnings) + [
                 f'Banco nuevo: {b}. Verifique la cuenta contable.' for b in new_banks]
 
-        if 'banco' in processed.columns and 'importe_cancelado' in processed.columns:
-            pv = processed[['banco', 'serie', 'documento', 'importe_cancelado', 'fecha_cancelacion']].head(100).copy()
-            td_vals = (tip_docs.head(100).values if tip_docs is not None else [''] * min(100, len(processed)))
+        included = included_df if included_df is not None else processed
+        docs_scope = tip_docs_included if tip_docs_included is not None else tip_docs
+
+        if 'banco' in included.columns and 'importe_cancelado' in included.columns:
+            pv = included[['banco', 'serie', 'documento', 'importe_cancelado', COBRO_DATE_COLUMN]].head(100).copy()
+            td_vals = (docs_scope.head(100).values if docs_scope is not None else [''] * min(100, len(included)))
             pv['tip_doc'] = td_vals
             pv.columns = ['banco', 'serie', 'documento', 'importe', 'fecha', 'tip_doc']
             pv['importe'] = pv['importe'].apply(lambda x: f'{float(x):,.2f}' if pd.notna(x) else '0.00')
@@ -564,14 +637,14 @@ class ConversorODEApp(tk.Tk):
                     str(row['fecha']), row['tip_doc'] or '?'))
 
         # --- Doc-type section ---
-        if tip_docs is not None:
-            n_01  = int((tip_docs == '01').sum())
-            n_03  = int((tip_docs == '03').sum())
-            n_unk = int((tip_docs == '').sum())
-            if 'importe_cancelado' in processed.columns:
-                imp_01  = float(processed.loc[tip_docs == '01', 'importe_cancelado'].sum()) if n_01  > 0 else 0.0
-                imp_03  = float(processed.loc[tip_docs == '03', 'importe_cancelado'].sum()) if n_03  > 0 else 0.0
-                imp_unk = float(processed.loc[tip_docs == '',   'importe_cancelado'].sum()) if n_unk > 0 else 0.0
+        if docs_scope is not None:
+            n_01  = int((docs_scope == '01').sum())
+            n_03  = int((docs_scope == '03').sum())
+            n_unk = int((docs_scope == '').sum())
+            if 'importe_cancelado' in included.columns:
+                imp_01  = float(included.loc[docs_scope == '01', 'importe_cancelado'].sum()) if n_01  > 0 else 0.0
+                imp_03  = float(included.loc[docs_scope == '03', 'importe_cancelado'].sum()) if n_03  > 0 else 0.0
+                imp_unk = float(included.loc[docs_scope == '',   'importe_cancelado'].sum()) if n_unk > 0 else 0.0
                 self._type_summary_var.set(
                     f'Facturas (01): {n_01} — S/{imp_01:,.2f}   │   '
                     f'Boletas (03): {n_03} — S/{imp_03:,.2f}   │   '
@@ -581,7 +654,7 @@ class ConversorODEApp(tk.Tk):
                 self._type_summary_var.set(
                     f'Facturas (01): {n_01}   │   Boletas (03): {n_03}   │   Sin resolver: {n_unk}'
                 )
-            self._populate_series_tree(processed, tip_docs)
+            self._populate_series_tree(included, docs_scope)
             self._populate_serie_map_editor(processed, tip_docs)
         else:
             self._type_summary_var.set('Tipo no analizado.')
@@ -594,8 +667,22 @@ class ConversorODEApp(tk.Tk):
         self.cards['balance'].config(text='PENDIENTE')
         self.cards['status'].config(text=state_after_analysis)
 
+        generation_preview = self.last_result.get('generation_preview', {})
+        preview_line = ''
+        if generation_preview:
+            preview_line = (
+                'Rango de cobro: '
+                f"{generation_preview['fecha_desde'].strftime('%d/%m/%Y')} a "
+                f"{generation_preview['fecha_hasta'].strftime('%d/%m/%Y')} | "
+                f"Abonos: {generation_preview['abonos_en_rango']} | "
+                f"Asientos: {generation_preview['cantidad_asientos']} | "
+                f"Total: S/{generation_preview['total_en_rango']:,.2f} | "
+                f"Fuera de rango: {generation_preview['movimientos_fuera_rango']} | "
+                f"Correlativos: {generation_preview['correlativo_inicial']:04d}-{generation_preview['correlativo_final']:04d}"
+            )
         lines = (
-            [f'[ERROR] {m}' for m in errors]
+            ([f'[INFO] {preview_line}'] if preview_line else [])
+            + [f'[ERROR] {m}' for m in errors]
             + [f'[ADVERTENCIA] {m}' for m in warnings]
             + [f'[INFO] {m}' for m in info]
         )
@@ -728,24 +815,43 @@ class ConversorODEApp(tk.Tk):
             messagebox.showwarning('Archivo requerido', 'Debe seleccionar un reporte antes de generar la carga.')
             return
         periodo = f"{int(self.year_var.get()):04d}{self.month_var.get()}"
-        fecha_calculo = self.date_selector.get()
+        fecha_calculo = 'fecha_cancelacion'
+        fecha_desde = self.fecha_desde_var.get().strip()
+        fecha_hasta = self.fecha_hasta_var.get().strip()
+        try:
+            correlativo_inicial = int(self.correlativo_inicial_var.get() or '1')
+        except ValueError:
+            messagebox.showwarning('Correlativo inválido', 'El correlativo inicial debe ser un número entero.')
+            return
         self.progress['value'] = 5
         self.status_label.config(text='Generando carga...')
         cfg = self._collect_config()
         self.config = cfg
         threading.Thread(
             target=self._generate_worker,
-            args=(source_path, output_dir, cfg, periodo, fecha_calculo),
+            args=(source_path, output_dir, cfg, periodo, fecha_calculo, fecha_desde, fecha_hasta, correlativo_inicial),
             daemon=True).start()
 
-    def _generate_worker(self, source_path: str, output_dir: str, cfg: dict,
-                         periodo: str, fecha_calculo: str) -> None:
+    def _generate_worker(
+        self,
+        source_path: str,
+        output_dir: str,
+        cfg: dict,
+        periodo: str,
+        fecha_calculo: str,
+        fecha_desde: str,
+        fecha_hasta: str,
+        correlativo_inicial: int,
+    ) -> None:
         try:
             result = process_report(
                 source_path, output_dir, cfg,
                 fecha_calculo=fecha_calculo,
                 periodo=periodo,
                 model_path=self.model_label.get() or None,
+                fecha_desde=fecha_desde,
+                fecha_hasta=fecha_hasta,
+                correlativo_inicial=correlativo_inicial,
             )
             self.after(0, lambda: self._finish_generation(result))
         except Exception as exc:
@@ -779,6 +885,12 @@ class ConversorODEApp(tk.Tk):
             f'1. Usar "Pasar ventas y clientes a formato TXT"\n'
             f'   y seleccionar el archivo .xls anterior.\n'
             f'2. Cargar el TXT generado en el módulo contable.\n\n'
+            f'Importante:\n'
+            f'- Generar el archivo no significa que ya fue importado en STARSOFT.\n'
+            f'- No importes dos veces la misma cobranza.\n\n'
+            f'TIP_CAMBIO:\n'
+            f'- Se mantiene según la configuración vigente.\n'
+            f'- La importación real en STARSOFT para este punto sigue pendiente de prueba.\n\n'
             f'Reporte de validación (solo revisión):\n{result["report_file"]}')
 
     # ------------------------------------------------------------------
@@ -799,7 +911,9 @@ class ConversorODEApp(tk.Tk):
         self.output_dir.set(str(APP_DIR / 'salida'))
         self.year_var.set('2026')
         self.month_var.set('08')
-        self.date_selector.set('fecha_cancelacion')
+        self.fecha_desde_var.set('01/08/2026')
+        self.fecha_hasta_var.set('31/08/2026')
+        self.correlativo_inicial_var.set('1')
         self.validation_box.delete('1.0', tk.END)
         self.preview.delete(*self.preview.get_children())
         self.progress['value'] = 0

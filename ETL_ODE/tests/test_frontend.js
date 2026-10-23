@@ -43,6 +43,8 @@ const APP_SCRIPT = scriptMatch[1];
 // Minimal DOM markup with all IDs the script references
 // ---------------------------------------------------------------------------
 const MINIMAL_HTML = `<!DOCTYPE html><html><body>
+  <header id="app-header"></header>
+  <div class="container" id="app-container">
   <button id="btn-analyze" disabled>Analizar</button>
   <button id="btn-generate" disabled>Generar</button>
   <button id="btn-remap" disabled>Guardar mapeo</button>
@@ -58,7 +60,11 @@ const MINIMAL_HTML = `<!DOCTYPE html><html><body>
   <div   id="file-name"></div>
   <input type="number" id="inp-year"  value="2026">
   <select id="inp-month"><option value="8" selected>Agosto</option></select>
-  <select id="inp-fecha-calculo"><option value="fecha_cancelacion" selected></option></select>
+  <input type="date" id="inp-fecha-desde" value="2026-08-01">
+  <input type="date" id="inp-fecha-hasta" value="2026-08-31">
+  <input type="number" id="inp-correlativo-inicial" value="1">
+  <button id="btn-open-guide">Ayuda</button>
+  <button class="help-trigger" id="help-trigger-1" data-help="Ayuda de prueba" aria-label="Ayuda de prueba">i</button>
   <input type="text" id="cfg-cuenta-clientes"  value="12120001">
   <input type="text" id="cfg-sub-diario"       value="07">
   <input type="text" id="cfg-tipo-anexo"       value="02">
@@ -96,6 +102,15 @@ const MINIMAL_HTML = `<!DOCTYPE html><html><body>
   <ul  id="unconfigured-banks-list"></ul>
   <span id="analyze-status"></span>
   <span id="generate-status"></span>
+</div>
+  <div id="guide-modal" class="guide-modal">
+    <div class="guide-panel">
+      <button id="btn-close-guide">Cerrar</button>
+      <a href="#" id="guide-link-1">link</a>
+      <button id="guide-link-2">otro</button>
+    </div>
+  </div>
+  <div id="help-popover" hidden></div>
 </body></html>`;
 
 // ---------------------------------------------------------------------------
@@ -848,6 +863,104 @@ await test('readConfig includes BCP in default bancos', async () => {
 await test('normaliseBankName maps DE CREDITO DEL PERU to BCP', async () => {
   const { G } = createEnv();
   assert.equal(G.normaliseBankName('DE CREDITO DEL PERU'), 'BCP');
+});
+
+// ===========================================================================
+// 9. Tooltip + guide accessibility interactions
+// ===========================================================================
+console.log('\n--- Tooltip and guide accessibility ---');
+
+await test('first click opens help tooltip and second click closes it', async () => {
+  const { win, G } = createEnv();
+  G.initHelpTooltips();
+  const trigger = win.document.getElementById('help-trigger-1');
+  const popover = win.document.getElementById('help-popover');
+
+  trigger.dispatchEvent(new win.FocusEvent('focusin', { bubbles: true }));
+  assert.equal(popover.hidden, true, 'focusin alone must not auto-open');
+
+  trigger.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(popover.hidden, false, 'first click should open tooltip');
+
+  trigger.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(popover.hidden, true, 'second click should close tooltip');
+});
+
+await test('hover keeps tooltip open while moving from trigger to popover', async () => {
+  const { win, G } = createEnv();
+  G.initHelpTooltips();
+  const trigger = win.document.getElementById('help-trigger-1');
+  const popover = win.document.getElementById('help-popover');
+
+  trigger.dispatchEvent(new win.MouseEvent('mouseover', { bubbles: true }));
+  assert.equal(popover.hidden, false, 'hover should open tooltip');
+
+  trigger.dispatchEvent(new win.MouseEvent('mouseout', { bubbles: true, relatedTarget: popover }));
+  assert.equal(popover.hidden, false, 'moving pointer to popover must keep it open');
+
+  popover.dispatchEvent(new win.MouseEvent('mouseout', { bubbles: true, relatedTarget: win.document.body }));
+  assert.equal(popover.hidden, true, 'leaving popover area should close tooltip');
+});
+
+await test('click after hover keeps tooltip open; next click closes it', async () => {
+  const { win, G } = createEnv();
+  G.initHelpTooltips();
+  const trigger = win.document.getElementById('help-trigger-1');
+  const popover = win.document.getElementById('help-popover');
+
+  trigger.dispatchEvent(new win.MouseEvent('mouseover', { bubbles: true }));
+  assert.equal(popover.hidden, false, 'hover should open tooltip');
+
+  trigger.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(popover.hidden, false, 'first click after hover should keep tooltip open');
+
+  trigger.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.equal(popover.hidden, true, 'second click should close tooltip');
+});
+
+await test('keyboard can open help tooltip and Escape closes it', async () => {
+  const { win, G } = createEnv();
+  G.initHelpTooltips();
+  const trigger = win.document.getElementById('help-trigger-1');
+  const popover = win.document.getElementById('help-popover');
+
+  trigger.focus();
+  trigger.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  assert.equal(popover.hidden, false, 'Enter should open tooltip');
+
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(popover.hidden, true, 'Escape should close tooltip');
+});
+
+await test('guide modal traps focus and restores opener focus on close', async () => {
+  const { win, G } = createEnv();
+  G.initGuideModal();
+  const openBtn = win.document.getElementById('btn-open-guide');
+  const closeBtn = win.document.getElementById('btn-close-guide');
+  const lastBtn = win.document.getElementById('guide-link-2');
+  const backgroundInput = win.document.getElementById('cfg-moneda');
+  const modal = win.document.getElementById('guide-modal');
+
+  openBtn.focus();
+  openBtn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  assert.ok(modal.classList.contains('open'), 'modal should open');
+  assert.equal(win.document.activeElement, closeBtn, 'focus should move into modal');
+
+  lastBtn.focus();
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+  assert.equal(win.document.activeElement, closeBtn, 'Tab on last control wraps to first');
+
+  closeBtn.focus();
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
+  assert.equal(win.document.activeElement, lastBtn, 'Shift+Tab on first control wraps to last');
+
+  backgroundInput.focus();
+  backgroundInput.dispatchEvent(new win.FocusEvent('focusin', { bubbles: true }));
+  assert.equal(win.document.activeElement, closeBtn, 'background focus should be redirected while modal is open');
+
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.ok(!modal.classList.contains('open'), 'modal should close with Escape');
+  assert.equal(win.document.activeElement, openBtn, 'focus should return to modal opener');
 });
 
 // ===========================================================================

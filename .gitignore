@@ -23,3 +23,6 @@ ETL_ODE/*.xls
 
 .venv_build/
 **/.venv_build/
+
+# Frontend dependencies
+ETL_ODE/node_modules/
